@@ -1,0 +1,31 @@
+CONTRAT DE VENTE IMMOBILIÈRE - DOCUMENT TEST
+
+Référence: IMM-2024-0789
+Date de signature: 10 juin 2024
+
+VENDEUR:
+Nom: Société Immobilière Test
+Adresse: 123 Rue de la Paix, 75001 Paris
+SIRET: 12345678901234
+
+ACQUÉREUR:
+Nom: Jean Martin
+Adresse: 456 Avenue des Tests, 69000 Lyon
+Téléphone: +33 4 56 78 90 12
+
+BIEN IMMOBILIER:
+Type: Appartement 3 pièces
+Surface: 75 m²
+Adresse: 789 Boulevard du Test, 13000 Marseille
+Prix de vente: 285,000 EUR
+
+CONDITIONS:
+- Financement: Prêt bancaire 80%
+- Apport personnel: 57,000 EUR
+- Frais de notaire: 8,550 EUR
+- Date de remise des clés: 15 juillet 2024
+
+CLAUSES PARTICULIÈRES:
+Garantie décennale incluse
+Diagnostic énergétique: Classe B
+Charges copropriété: 150 EUR/mois

@@ -1,0 +1,21 @@
+RAPPORT FINANCIER - EXEMPLE DE TEST
+
+Date: 15 mars 2024
+Société: Test Financial Corp
+Montant: 15,000 EUR
+
+DÉTAILS DE TRANSACTION:
+- Prêt hypothécaire: 150,000 EUR
+- Taux d'intérêt: 2.5% annuel
+- Durée: 25 ans
+- Mensualité: 673.57 EUR
+
+CONTACT:
+Michel Dupont
+Conseiller financier
+Téléphone: +33 1 23 45 67 89
+Email: michel.dupont@testbank.fr
+
+NOTES:
+Dossier prioritaire pour révision trimestrielle.
+Documents supplémentaires requis avant le 30 avril 2024.

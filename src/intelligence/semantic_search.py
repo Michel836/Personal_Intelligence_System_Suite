@@ -1,0 +1,399 @@
+"""Semantic search engine using embeddings."""
+
+import numpy as np
+from typing import List, Dict, Any, Optional, Tuple
+from pathlib import Path
+import json
+from functools import lru_cache
+from cachetools import LRUCache
+import threading
+
+from loguru import logger
+from ..core.database import DatabaseManager
+from ..core.validation import validate_semantic_search_params, SemanticSearchParams, ValidationError
+from .embeddings import EmbeddingGenerator
+
+
+class SemanticSearchEngine:
+    """Semantic search engine for intelligent document retrieval."""
+    
+    def __init__(self, db: Optional[DatabaseManager] = None):
+        self.db = db or DatabaseManager()
+        self.embedding_gen = EmbeddingGenerator()
+        
+        # LRU cache for embeddings (max 10,000 embeddings ~ 1GB memory)
+        self.embeddings_cache = LRUCache(maxsize=10000)
+        self.cache_lock = threading.Lock()
+        
+        # Query cache for search results (max 1000 queries ~ 100MB)
+        self.query_cache = LRUCache(maxsize=1000)
+        self.query_cache_lock = threading.Lock()
+        
+        logger.info(f"SemanticSearchEngine initialized. Embeddings available: {self.embedding_gen.is_available()}")
+    
+    def is_available(self) -> bool:
+        """Check if semantic search is available."""
+        return self.embedding_gen.is_available()
+    
+    def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Alias for semantic_search for compatibility."""
+        return self.semantic_search(query, limit)
+    
+    def semantic_search(
+        self,
+        query: str,
+        limit: int = 20,
+        similarity_threshold: float = 0.3
+    ) -> List[Dict[str, Any]]:
+        """Perform semantic search on document content with validation and caching."""
+        
+        # Validate parameters
+        try:
+            params = validate_semantic_search_params(
+                query=query,
+                limit=limit,
+                similarity_threshold=similarity_threshold
+            )
+        except ValidationError as e:
+            logger.error(f"Invalid search parameters: {e}")
+            return []
+        
+        if not self.is_available():
+            logger.warning("Semantic search not available - falling back to regular search")
+            return self.db.search_files(query=params.query, limit=params.limit)
+        
+        # Create cache key
+        cache_key = (params.query, params.limit, params.similarity_threshold)
+        
+        # Check query cache first
+        with self.query_cache_lock:
+            if cache_key in self.query_cache:
+                logger.debug(f"Found cached results for query: '{params.query}'")
+                return self.query_cache[cache_key]
+        
+        logger.info(f"Performing semantic search for: '{params.query}'")
+        
+        # Generate query embedding
+        query_embedding = self.embedding_gen.generate_embedding(params.query)
+        if query_embedding is None:
+            logger.error("Failed to generate query embedding")
+            return []
+        
+        # Get all documents with content
+        documents = self._get_documents_with_content(params.limit * 5)  # Get more candidates
+        if not documents:
+            logger.info("No documents with extracted content found")
+            return []
+        
+        # Generate embeddings for documents (if not cached)
+        doc_embeddings = []
+        valid_docs = []
+        
+        for doc in documents:
+            doc_id = doc['id']
+            content = doc.get('content_text', '')
+            
+            if not content.strip():
+                continue
+            
+            # Try to get cached embedding
+            embedding = self._get_cached_embedding(doc_id)
+            
+            if embedding is None:
+                # Generate new embedding
+                embedding = self.embedding_gen.generate_embedding(content)
+                if embedding is not None:
+                    self._cache_embedding(doc_id, embedding)
+            
+            if embedding is not None:
+                doc_embeddings.append(embedding)
+                valid_docs.append(doc)
+        
+        if not doc_embeddings:
+            logger.info("No valid document embeddings found")
+            return []
+        
+        # Find similar documents
+        similar_indices = self.embedding_gen.find_similar(
+            query_embedding, 
+            doc_embeddings, 
+            top_k=params.limit
+        )
+        
+        # Prepare results
+        results = []
+        for idx, similarity in similar_indices:
+            if similarity >= params.similarity_threshold:
+                doc = valid_docs[idx].copy()
+                doc['semantic_similarity'] = similarity
+                doc['search_type'] = 'semantic'
+                results.append(doc)
+        
+        logger.info(f"Found {len(results)} semantically similar documents")
+        
+        # Cache the results
+        with self.query_cache_lock:
+            self.query_cache[cache_key] = results
+        
+        return results
+    
+    def hybrid_search(
+        self,
+        query: str,
+        limit: int = 20,
+        semantic_weight: float = 0.7,
+        text_weight: float = 0.3
+    ) -> List[Dict[str, Any]]:
+        """Combine semantic and text search for best results."""
+        
+        # Get semantic results
+        semantic_results = self.semantic_search(query, limit=limit)
+        
+        # Get text search results
+        text_results = self.db.search_files(query=query, limit=limit)
+        
+        # Combine and deduplicate
+        combined_results = {}
+        
+        # Add semantic results
+        for doc in semantic_results:
+            doc_id = doc['id']
+            score = doc.get('semantic_similarity', 0.0) * semantic_weight
+            combined_results[doc_id] = {
+                'document': doc,
+                'semantic_score': doc.get('semantic_similarity', 0.0),
+                'text_score': 0.0,
+                'combined_score': score
+            }
+        
+        # Add text results
+        for doc in text_results:
+            doc_id = doc['id']
+            
+            # Simple text relevance scoring (can be improved)
+            text_score = self._calculate_text_relevance(query, doc)
+            
+            if doc_id in combined_results:
+                # Update existing result
+                combined_results[doc_id]['text_score'] = text_score
+                combined_results[doc_id]['combined_score'] += text_score * text_weight
+            else:
+                # Add new result
+                combined_results[doc_id] = {
+                    'document': doc,
+                    'semantic_score': 0.0,
+                    'text_score': text_score,
+                    'combined_score': text_score * text_weight
+                }
+        
+        # Sort by combined score
+        sorted_results = sorted(
+            combined_results.values(),
+            key=lambda x: x['combined_score'],
+            reverse=True
+        )
+        
+        # Format results
+        final_results = []
+        for result in sorted_results[:limit]:
+            doc = result['document'].copy()
+            doc.update({
+                'semantic_similarity': result['semantic_score'],
+                'text_relevance': result['text_score'],
+                'combined_score': result['combined_score'],
+                'search_type': 'hybrid'
+            })
+            final_results.append(doc)
+        
+        logger.info(f"Hybrid search returned {len(final_results)} results")
+        return final_results
+    
+    def find_similar_documents(
+        self,
+        document_id: int,
+        limit: int = 10,
+        similarity_threshold: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """Find documents similar to a given document."""
+        
+        if not self.is_available():
+            return []
+        
+        # Get the reference document
+        ref_doc = self._get_document_by_id(document_id)
+        if not ref_doc or not ref_doc.get('content_text'):
+            return []
+        
+        # Get or generate embedding for reference document
+        ref_embedding = self._get_cached_embedding(document_id)
+        if ref_embedding is None:
+            ref_embedding = self.embedding_gen.generate_embedding(ref_doc['content_text'])
+            if ref_embedding is None:
+                return []
+            self._cache_embedding(document_id, ref_embedding)
+        
+        # Find similar documents
+        return self.semantic_search_by_embedding(
+            ref_embedding, 
+            limit=limit + 1,  # +1 to exclude the reference document
+            similarity_threshold=similarity_threshold,
+            exclude_id=document_id
+        )
+    
+    def semantic_search_by_embedding(
+        self,
+        query_embedding: np.ndarray,
+        limit: int = 20,
+        similarity_threshold: float = 0.3,
+        exclude_id: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Search using a pre-computed embedding."""
+        
+        documents = self._get_documents_with_content(limit * 3)
+        if not documents:
+            return []
+        
+        doc_embeddings = []
+        valid_docs = []
+        
+        for doc in documents:
+            doc_id = doc['id']
+            
+            # Skip excluded document
+            if exclude_id and doc_id == exclude_id:
+                continue
+            
+            content = doc.get('content_text', '')
+            if not content.strip():
+                continue
+            
+            embedding = self._get_cached_embedding(doc_id)
+            if embedding is None:
+                embedding = self.embedding_gen.generate_embedding(content)
+                if embedding is not None:
+                    self._cache_embedding(doc_id, embedding)
+            
+            if embedding is not None:
+                doc_embeddings.append(embedding)
+                valid_docs.append(doc)
+        
+        # Find similar documents
+        similar_indices = self.embedding_gen.find_similar(
+            query_embedding,
+            doc_embeddings,
+            top_k=limit
+        )
+        
+        results = []
+        for idx, similarity in similar_indices:
+            if similarity >= similarity_threshold:
+                doc = valid_docs[idx].copy()
+                doc['semantic_similarity'] = similarity
+                doc['search_type'] = 'semantic'
+                results.append(doc)
+        
+        return results
+    
+    def _get_documents_with_content(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Get documents that have extracted content."""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT * FROM files
+                WHERE content_extracted = 1 
+                AND content_text IS NOT NULL 
+                AND length(content_text) > 50
+                ORDER BY priority DESC, modified_at DESC
+                LIMIT ?
+            """, (limit,))
+            
+            return [dict(row) for row in cursor]
+    
+    def _get_document_by_id(self, doc_id: int) -> Optional[Dict[str, Any]]:
+        """Get a specific document by ID."""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT * FROM files WHERE id = ?
+            """, (doc_id,))
+            
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    
+    def _calculate_text_relevance(self, query: str, document: Dict[str, Any]) -> float:
+        """Calculate text relevance score (simple implementation)."""
+        
+        content = document.get('content_text') or ''
+        filename = document.get('filename') or ''
+        
+        if not content and not filename:
+            return 0.0
+        
+        query_lower = query.lower()
+        content_lower = content.lower() if content else ''
+        filename_lower = filename.lower() if filename else ''
+        
+        score = 0.0
+        
+        # Filename matches (high weight)
+        if query_lower in filename_lower:
+            score += 1.0
+        
+        # Content matches
+        content_matches = content_lower.count(query_lower)
+        if content_matches > 0:
+            # Normalize by content length
+            content_length = len(content_lower.split())
+            score += min(content_matches / max(content_length, 1) * 10, 1.0)
+        
+        return score
+    
+    def _get_cached_embedding(self, doc_id: int) -> Optional[np.ndarray]:
+        """Get cached embedding for document (thread-safe)."""
+        
+        # Check memory cache with lock
+        with self.cache_lock:
+            if doc_id in self.embeddings_cache:
+                return self.embeddings_cache[doc_id]
+        
+        # Check disk cache
+        cache_key = f"doc_{doc_id}"
+        embedding = self.embedding_gen.load_embedding_cache(cache_key)
+        
+        if embedding is not None:
+            with self.cache_lock:
+                self.embeddings_cache[doc_id] = embedding
+        
+        return embedding
+    
+    def _cache_embedding(self, doc_id: int, embedding: np.ndarray) -> None:
+        """Cache embedding for document (thread-safe)."""
+        
+        # Memory cache with lock
+        with self.cache_lock:
+            self.embeddings_cache[doc_id] = embedding
+        
+        # Disk cache
+        cache_key = f"doc_{doc_id}"
+        self.embedding_gen.save_embedding_cache(cache_key, embedding)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get semantic search statistics."""
+        
+        # Count documents with embeddings
+        cached_embeddings = len(self.embeddings_cache)
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.execute("""
+                SELECT COUNT(*) FROM files 
+                WHERE content_extracted = 1 
+                AND content_text IS NOT NULL
+            """)
+            total_with_content = cursor.fetchone()[0]
+        
+        return {
+            'semantic_search_available': self.is_available(),
+            'embedding_model': self.embedding_gen.model_name if self.is_available() else None,
+            'embedding_dimension': self.embedding_gen.embedding_dim,
+            'cached_embeddings': cached_embeddings,
+            'documents_with_content': total_with_content,
+            'cache_hit_rate': 0.0  # TODO: implement proper tracking
+        }

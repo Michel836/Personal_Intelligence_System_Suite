@@ -1,0 +1,8 @@
+Ceci est un document de test pour le système 36TB Intelligence.
+
+Ce document contient du texte en français pour tester l'extraction de contenu et la recherche sémantique.
+
+Mots-clés importants: intelligence artificielle, Ollama, LLM, recherche, documents, extraction.
+
+Date: 2025-09-03
+Auteur: Système de test 36TB Intelligence
