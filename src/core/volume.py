@@ -28,6 +28,9 @@ class VolumeInfo:
     mountpoint: str = "/"
     is_available: bool = True
     display_name: Optional[str] = None
+    # True when the identity came from ``resolve_volume`` and must be re-verified
+    # at reconciliation time (production). Synthetic/test volumes set False.
+    identity_verified: bool = False
 
 
 def normalize_root(path: "str | Path") -> str:
@@ -99,7 +102,10 @@ def resolve_volume(path: "str | Path") -> VolumeInfo:
         stat_result = os.stat(root)
         device = stat_result.st_dev
     except OSError:
-        return VolumeInfo(stable_key=f"path:{root}", mountpoint=root, is_available=False)
+        return VolumeInfo(
+            stable_key=f"path:{root}", mountpoint=root, is_available=False,
+            identity_verified=True,
+        )
 
     try:
         device_number = f"{os.major(device)}:{os.minor(device)}"
@@ -113,6 +119,7 @@ def resolve_volume(path: "str | Path") -> VolumeInfo:
             device=device_number,
             mountpoint=root,
             is_available=os.path.isdir(root),
+            identity_verified=True,
         )
 
     mountpoint, fs_type, source = mount
@@ -132,6 +139,7 @@ def resolve_volume(path: "str | Path") -> VolumeInfo:
         mountpoint=mountpoint,
         is_available=os.path.ismount(mountpoint),
         display_name=mountpoint,
+        identity_verified=True,
     )
 
 

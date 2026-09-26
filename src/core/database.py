@@ -232,6 +232,7 @@ class DatabaseManager:
                 mountpoint TEXT,
                 display_name TEXT,
                 is_available INTEGER DEFAULT 0,
+                identity_verified INTEGER DEFAULT 0,
                 first_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 last_seen_at TEXT
             )
@@ -250,6 +251,9 @@ class DatabaseManager:
                 error_message TEXT
             )
         """)
+        volume_columns = {row[1] for row in conn.execute("PRAGMA table_info(volumes)")}
+        if "identity_verified" not in volume_columns:
+            conn.execute("ALTER TABLE volumes ADD COLUMN identity_verified INTEGER DEFAULT 0")
         existing = {row[1] for row in conn.execute("PRAGMA table_info(files)")}
         columns = {
             "volume_id": "INTEGER",
@@ -272,8 +276,8 @@ class DatabaseManager:
     def _upsert_volume(self, conn, volume: VolumeInfo) -> int:
         conn.execute("""
             INSERT INTO volumes (stable_key, device, fs_uuid, fs_type, mountpoint,
-                                 display_name, is_available, last_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                                 display_name, is_available, identity_verified, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(stable_key) DO UPDATE SET
                 device = excluded.device,
                 fs_uuid = excluded.fs_uuid,
@@ -281,11 +285,13 @@ class DatabaseManager:
                 mountpoint = excluded.mountpoint,
                 display_name = excluded.display_name,
                 is_available = excluded.is_available,
+                identity_verified = excluded.identity_verified,
                 last_seen_at = CURRENT_TIMESTAMP
         """, (
             volume.stable_key, volume.device, volume.fs_uuid, volume.fs_type,
             volume.mountpoint, volume.display_name or volume.mountpoint,
             1 if volume.is_available else 0,
+            1 if volume.identity_verified else 0,
         ))
         row = conn.execute(
             "SELECT id FROM volumes WHERE stable_key = ?", (volume.stable_key,)
@@ -376,12 +382,24 @@ class DatabaseManager:
                 raise ValueError(f"scan run {run_id} is {run['status']}, not RUNNING")
             volume = self._volume_row(conn, int(run["volume_id"]))
             available = volume is not None and bool(volume["is_available"])
+            root_path = run["root_path"]
+            registered_key = volume["stable_key"] if volume else None
+            verify_identity = bool(volume["identity_verified"]) if volume else False
 
         if not available:
             # Never leave a stuck RUNNING run behind; a FAILED run never
             # reconciles, so files keep their previous lifecycle state.
             self._finish_run(run_id, "FAILED", error_message="volume unavailable")
             raise ValueError("refusing to reconcile: volume is not available")
+
+        if verify_identity:
+            # The same mountpoint may now belong to a different device (disk
+            # swapped/unmounted). Never reconcile unless the resolved identity
+            # still matches the volume that was scanned.
+            resolved = resolve_volume(root_path)
+            if not resolved.is_available or resolved.stable_key != registered_key:
+                self._finish_run(run_id, "FAILED", error_message="volume identity mismatch")
+                raise ValueError("refusing to reconcile: volume identity changed")
 
         self._finish_run(run_id, "COMPLETED")
         with self.get_connection() as conn:
