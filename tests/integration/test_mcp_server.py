@@ -65,4 +65,39 @@ def test_build_server_registers_readonly_tools() -> None:
     server = mcp_server.build_server()
     tools = asyncio.run(server.list_tools())
     names = {t.name for t in tools}
-    assert {"search_files", "get_document", "semantic_search"} <= names
+    assert names == {"search_files", "get_document", "semantic_search"}
+    assert not any(token in n.lower() for n in names for token in ("write", "delete", "scan", "update"))
+
+
+def test_get_document_rejects_path_outside_allowed_roots(seeded: Path, tmp_path: Path, monkeypatch) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setenv("PIS_MCP_ALLOWED_ROOTS", str(allowed))
+    result = mcp_server.get_document(path="/etc/passwd")
+    assert result["error"] == "path outside allowed roots"
+
+
+def test_get_document_rejects_traversal(seeded: Path, tmp_path: Path, monkeypatch) -> None:
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setenv("PIS_MCP_ALLOWED_ROOTS", str(allowed))
+    result = mcp_server.get_document(path=str(allowed / ".." / "escape.txt"))
+    assert result["error"] == "path outside allowed roots"
+
+
+def test_get_document_rejects_null_byte(seeded: Path) -> None:
+    result = mcp_server.get_document(path="rapport\x00.txt")
+    assert result["error"] == "invalid path"
+
+
+def test_preview_is_capped(seeded: Path) -> None:
+    doc_id = mcp_server.search_files(query="rapport")[0]["id"]
+    doc = mcp_server.get_document(file_id=doc_id, max_chars=10_000_000)
+    assert len(doc["content_preview"]) <= mcp_server._MAX_PREVIEW_CHARS
+
+
+def test_remote_transport_refused_without_flag(monkeypatch) -> None:
+    monkeypatch.setenv("PIS_MCP_TRANSPORT", "sse")
+    monkeypatch.delenv("PIS_MCP_ALLOW_REMOTE", raising=False)
+    with pytest.raises(SystemExit):
+        mcp_server.main()

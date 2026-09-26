@@ -25,10 +25,11 @@ class ChatEngine:
     
     def __init__(
         self,
-        model_name: str = "llama3.2:latest",
+        model_name: Optional[str] = None,
         db: Optional[DatabaseManager] = None
     ):
-        self.model_name = model_name
+        from ..core.ai_config import model_for
+        self.model_name = model_name or model_for("interactive_chat")
         self.db = db or DatabaseManager()
         self.semantic_search = SemanticSearchEngine(self.db)
         
