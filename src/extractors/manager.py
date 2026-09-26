@@ -9,6 +9,7 @@ from loguru import logger
 from .base import BaseExtractor, ExtractionResult
 from .pdf_extractor import PDFExtractor
 from .office_extractor import OfficeExtractor
+from .odf_extractor import OdfExtractor
 from .text_extractor import TextExtractor
 
 
@@ -18,8 +19,9 @@ class ExtractionManager:
     def __init__(self, max_workers: int = 2):
         self.extractors: List[BaseExtractor] = [
             PDFExtractor(),
-            OfficeExtractor(), 
-            TextExtractor()
+            OfficeExtractor(),
+            OdfExtractor(),
+            TextExtractor(),
         ]
         self.max_workers = max_workers
         
@@ -41,23 +43,42 @@ class ExtractionManager:
                 return extractor
         return None
     
+    @staticmethod
+    def _try_ocr(file_path: Path, start_time: float) -> Optional[ExtractionResult]:
+        """Optional Tesseract fallback (disabled unless PIS_OCR_ENABLED=1)."""
+        try:
+            from .ocr import IMAGE_EXTENSIONS, PDF_EXTENSIONS, ocr_enabled, ocr_file
+        except Exception:
+            return None
+        if not ocr_enabled() or file_path.suffix.lower() not in (IMAGE_EXTENSIONS | PDF_EXTENSIONS):
+            return None
+        return ocr_file(file_path)
+
     def extract_single(self, file_path: Path) -> ExtractionResult:
-        """Extract content from a single file."""
+        """Extract content from a single file (with optional OCR fallback)."""
         start_time = time.time()
-        
+
         # Find appropriate extractor
         extractor = self.get_extractor_for_file(file_path)
         if not extractor:
+            ocr_result = self._try_ocr(file_path, start_time)
+            if ocr_result is not None:
+                self._update_stats("ocr", ocr_result)
+                return ocr_result
             return ExtractionResult(
                 success=False,
                 error="No suitable extractor found",
                 extraction_time=time.time() - start_time
             )
-        
-        # Perform extraction
+
+        # Perform extraction; fall back to OCR when no text was produced.
         try:
             result = extractor.extract_content(file_path)
-            
+            if not result.success or not (result.content or "").strip():
+                ocr_result = self._try_ocr(file_path, start_time)
+                if ocr_result is not None and ocr_result.success:
+                    result = ocr_result
+
             # Update statistics
             self._update_stats(extractor.get_name(), result)
             
