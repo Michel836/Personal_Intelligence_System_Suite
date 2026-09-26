@@ -2,6 +2,7 @@
 
 import sqlite3
 import json
+import re
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -11,6 +12,52 @@ import time
 
 from loguru import logger
 from ..scanner.models import FileInfo, FileType, Priority
+
+
+# --- Lexical search (FTS5) -------------------------------------------------
+#
+# The FTS index is external-content (``content=files``), so it must be kept in
+# sync by triggers. ``bm25`` provides lexical relevance; ties are broken by a
+# semantic priority rank, then modification time and finally id so ordering is
+# deterministic.
+FTS_SCHEMA_VERSION = "1"
+_PRIORITY_RANK_SQL = (
+    "CASE priority "
+    "WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+    "WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
+)
+# Unicode-aware word characters (letters, digits, underscore and non-Latin
+# scripts). This preserves accented terms such as "résumé" while still
+# discarding FTS operators/punctuation.
+_FTS_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
+_FTS_SEGMENT_RE = re.compile(r'"([^"]*)"|(\S+)')
+# Single-character terms are matched exactly; only length >= 2 terms may use a
+# prefix query, otherwise "c++"/"C#" would broaden to every token starting "c".
+_FTS_MIN_PREFIX_LENGTH = 2
+
+
+def build_fts_match(query: str) -> Optional[str]:
+    """Build a safe FTS5 MATCH expression from user input.
+
+    Plain terms become prefix queries (length >= 2) combined with implicit AND;
+    quoted segments become exact phrases. Tokenisation is Unicode-aware and
+    operators are neutralised by extracting word characters and quoting, so
+    malformed input cannot raise an FTS syntax error. Returns ``None`` when no
+    usable term remains.
+    """
+    terms: List[str] = []
+    for phrase, bare in _FTS_SEGMENT_RE.findall(query):
+        if phrase:
+            tokens = _FTS_TOKEN_RE.findall(phrase)
+            if tokens:
+                terms.append('"' + " ".join(tokens) + '"')
+        else:
+            for token in _FTS_TOKEN_RE.findall(bare):
+                if len(token) >= _FTS_MIN_PREFIX_LENGTH:
+                    terms.append(f'"{token}"*')
+                else:
+                    terms.append(f'"{token}"')
+    return " ".join(terms) if terms else None
 
 
 class DatabaseManager:
@@ -114,12 +161,9 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_modified ON files(modified_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_parent ON files(parent_dir)")
             
-            # Full-text search table
-            conn.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS files_fts 
-                USING fts5(path, filename, content_text, content=files)
-            """)
-            
+            # Full-text search table + canonical synchronisation triggers
+            self._ensure_fts(conn)
+
             # Stats table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scan_stats (
@@ -137,7 +181,63 @@ class DatabaseManager:
             
             conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
-    
+
+    def _ensure_fts(self, conn) -> None:
+        """Create the FTS table/triggers and rebuild the index when needed.
+
+        An external-content FTS index stays empty until it is explicitly
+        populated, so metadata-only databases (created before trigger support)
+        are rebuilt once per schema version. The triggers keep it synchronised
+        afterwards, preventing silent stale-index state.
+        """
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS files_fts
+            USING fts5(path, filename, content_text, content=files)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS fts_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
+        # Recreate the canonical triggers so exactly one lifecycle exists (this
+        # also replaces the buggy plain UPDATE/DELETE variants).
+        for trigger in ("files_fts_insert", "files_fts_delete", "files_fts_update"):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+
+        conn.execute("""
+            CREATE TRIGGER files_fts_insert AFTER INSERT ON files BEGIN
+                INSERT INTO files_fts(rowid, path, filename, content_text)
+                VALUES (new.id, new.path, new.filename, new.content_text);
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER files_fts_delete AFTER DELETE ON files BEGIN
+                INSERT INTO files_fts(files_fts, rowid, path, filename, content_text)
+                VALUES ('delete', old.id, old.path, old.filename, old.content_text);
+            END
+        """)
+        conn.execute("""
+            CREATE TRIGGER files_fts_update AFTER UPDATE OF path, filename, content_text ON files BEGIN
+                INSERT INTO files_fts(files_fts, rowid, path, filename, content_text)
+                VALUES ('delete', old.id, old.path, old.filename, old.content_text);
+                INSERT INTO files_fts(rowid, path, filename, content_text)
+                VALUES (new.id, new.path, new.filename, new.content_text);
+            END
+        """)
+
+        row = conn.execute(
+            "SELECT value FROM fts_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is None or row[0] != FTS_SCHEMA_VERSION:
+            conn.execute("INSERT INTO files_fts(files_fts) VALUES('rebuild')")
+            conn.execute(
+                "INSERT OR REPLACE INTO fts_meta(key, value) VALUES ('schema_version', ?)",
+                (FTS_SCHEMA_VERSION,),
+            )
+            logger.info("Rebuilt FTS index for existing database")
+
     @contextmanager
     def get_connection(self, timeout=30.0, max_retries=3):
         """Get database connection with timeout and retry logic."""
@@ -240,6 +340,103 @@ class DatabaseManager:
         logger.info(f"Total files saved: {total_saved:,}")
         return total_saved
     
+    def _build_filter_conditions(
+        self,
+        file_type: Optional[FileType],
+        priority: Optional[Priority],
+        extension: Optional[str],
+        min_size: Optional[int],
+        max_size: Optional[int],
+    ) -> tuple[list[str], list[Any]]:
+        """Build the SQL filter conditions shared by every search path."""
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if file_type:
+            conditions.append("file_type = ?")
+            params.append(file_type.value if hasattr(file_type, "value") else str(file_type))
+        if priority:
+            conditions.append("priority = ?")
+            params.append(priority.value if hasattr(priority, "value") else str(priority))
+        if extension and extension.strip():
+            conditions.append("extension = ?")
+            params.append(extension.strip().lower())
+        if min_size is not None:
+            conditions.append("size_bytes >= ?")
+            params.append(min_size)
+        if max_size is not None:
+            conditions.append("size_bytes <= ?")
+            params.append(max_size)
+        return conditions, params
+
+    @staticmethod
+    def _where(conditions: list[str]) -> str:
+        return " AND ".join(conditions) if conditions else "1=1"
+
+    def _search_files_fts(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        conditions: list[str],
+        params: list[Any],
+        limit: int,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """FTS-backed lexical search; ``None`` when the query has no terms."""
+        match_expression = build_fts_match(query)
+        if match_expression is None:
+            return None
+
+        where = self._where(["files_fts MATCH ?", *conditions])
+        sql = f"""
+            SELECT files.* FROM files
+            JOIN files_fts ON files_fts.rowid = files.id
+            WHERE {where}
+            ORDER BY bm25(files_fts), {_PRIORITY_RANK_SQL},
+                     files.modified_at DESC, files.id ASC
+            LIMIT ?
+        """
+        cursor = conn.execute(sql, [match_expression, *params, limit])
+        return [dict(row) for row in cursor]
+
+    def _search_files_like(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        conditions: list[str],
+        params: list[Any],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Legacy contiguous-substring fallback used when FTS is unusable."""
+        like_term = f"%{query}%"
+        where = self._where(
+            [*conditions, "(filename LIKE ? OR path LIKE ? OR content_text LIKE ?)"]
+        )
+        sql = f"""
+            SELECT * FROM files
+            WHERE {where}
+            ORDER BY {_PRIORITY_RANK_SQL}, modified_at DESC, id ASC
+            LIMIT ?
+        """
+        cursor = conn.execute(sql, [*params, like_term, like_term, like_term, limit])
+        return [dict(row) for row in cursor]
+
+    def _search_files_all(
+        self,
+        conn: sqlite3.Connection,
+        conditions: list[str],
+        params: list[Any],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """Filter-only search (no text query)."""
+        sql = f"""
+            SELECT * FROM files
+            WHERE {self._where(conditions)}
+            ORDER BY {_PRIORITY_RANK_SQL}, modified_at DESC, id ASC
+            LIMIT ?
+        """
+        cursor = conn.execute(sql, [*params, limit])
+        return [dict(row) for row in cursor]
+
     def search_files(
         self,
         query: Optional[str] = None,
@@ -250,75 +447,30 @@ class DatabaseManager:
         max_size: Optional[int] = None,
         limit: int = 100
     ) -> List[Dict[str, Any]]:
-        """Search files with various filters."""
-        
-        conditions = []
-        params = []
-        
-        if query:
-            # Enhanced text search in filename, path, and content
-            conditions.append("(filename LIKE ? OR path LIKE ? OR content_text LIKE ?)")
-            search_term = f"%{query}%"
-            params.extend([search_term, search_term, search_term])
-        
-        if file_type:
-            conditions.append("file_type = ?")
-            # Handle both FileType enum and string
-            if hasattr(file_type, 'value'):
-                params.append(file_type.value)
-            else:
-                params.append(str(file_type))
-        
-        if priority:
-            conditions.append("priority = ?")
-            # Handle both Priority enum and string
-            if hasattr(priority, 'value'):
-                params.append(priority.value)
-            else:
-                params.append(str(priority))
-        
-        if extension and extension.strip():
-            conditions.append("extension = ?")
-            params.append(extension.strip().lower())
-        
-        if min_size is not None:
-            conditions.append("size_bytes >= ?")
-            params.append(min_size)
-        
-        if max_size is not None:
-            conditions.append("size_bytes <= ?")
-            params.append(max_size)
-        
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
+        """Search files by lexical text plus metadata filters.
+
+        Text queries use FTS5 with implicit AND between terms and support
+        double-quoted exact phrases. Relevance (``bm25``) is the primary sort,
+        followed by priority rank, modification time and id so ordering is
+        deterministic. If the FTS query cannot be executed the method falls back
+        to contiguous ``LIKE`` matching instead of raising.
+        """
+        conditions, params = self._build_filter_conditions(
+            file_type, priority, extension, min_size, max_size
+        )
+
         with self.get_connection() as conn:
-            # Debug logging
-            final_params = params + [limit]
-            query_sql = f"""
-                SELECT * FROM files
-                WHERE {where_clause}
-                ORDER BY priority DESC, modified_at DESC
-                LIMIT ?
-            """
-            
-            logger.debug(f"Search query: {query_sql}")
-            logger.debug(f"Parameters ({len(final_params)}): {final_params}")
-            
+            if not (query and query.strip()):
+                return self._search_files_all(conn, conditions, params, limit)
+
             try:
-                cursor = conn.execute(query_sql, final_params)
-            except Exception as e:
-                logger.error(f"SQL Error: {e}")
-                logger.error(f"Query: {query_sql}")
-                logger.error(f"Params: {final_params}")
-                logger.error(f"Where clause: {where_clause}")
-                logger.error(f"Conditions: {conditions}")
-                raise
-            
-            results = []
-            for row in cursor:
-                results.append(dict(row))
-            
-            return results
+                results = self._search_files_fts(conn, query, conditions, params, limit)
+                if results is not None:
+                    return results
+            except sqlite3.OperationalError as exc:
+                logger.warning(f"FTS search failed, falling back to LIKE: {exc}")
+
+            return self._search_files_like(conn, query, conditions, params, limit)
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get database statistics with error handling."""
@@ -398,13 +550,7 @@ class DatabaseManager:
                 WHERE id = ?
             """, (content, file_id))
             
-            # Update FTS index
-            conn.execute("""
-                INSERT OR REPLACE INTO files_fts (rowid, path, filename, content_text)
-                SELECT id, path, filename, ?
-                FROM files WHERE id = ?
-            """, (content, file_id))
-            
+            # The AFTER UPDATE trigger keeps files_fts synchronised.
             conn.commit()
     
     def get_unprocessed_documents(self, limit: int = 100) -> List[Dict[str, Any]]:

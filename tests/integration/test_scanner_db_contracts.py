@@ -5,10 +5,8 @@ These pin the *current* documented production contracts:
 * ``FastScannerEngine.scan_paths`` yields schema-valid ``FileInfo`` objects;
 * scanned metadata is persisted explicitly with ``save_files_batch``;
 * content is only searchable after ``DatabaseManager.update_content``;
-* ``DatabaseManager.search_files`` performs contiguous ``LIKE`` matching.
-
-Tokenized/multi-word (FTS) search is intentionally out of scope and deferred to
-M004B.
+* ``DatabaseManager.search_files`` uses FTS5 with implicit AND between terms and
+  supports double-quoted exact phrases.
 """
 from __future__ import annotations
 
@@ -65,17 +63,17 @@ def test_update_content_required_before_content_is_searchable(
     assert len(db.search_files(query="uniquemarker")) == 1
 
 
-def test_like_search_is_contiguous_substring(tmp_path: Path, file_info_factory) -> None:
+def test_multi_term_search_matches_disjoint_tokens(
+    tmp_path: Path, file_info_factory
+) -> None:
     db = DatabaseManager(tmp_path / "index.db")
-    file_id = db.save_file(file_info_factory(tmp_path / "like.txt", size_bytes=10))
+    file_id = db.save_file(file_info_factory(tmp_path / "terms.txt", size_bytes=10))
     db.update_content(file_id, "content about testing and performance here")
 
-    # Contiguous phrases match.
+    # M004B: FTS5 applies implicit AND across terms, so non-contiguous
+    # multi-word queries now match (the old contiguous LIKE path found none).
     assert len(db.search_files(query="testing and performance")) == 1
-
-    # CONTRACT(M004A): non-contiguous multi-word queries are not matched by the
-    # current LIKE implementation; tokenized FTS search is deferred to M004B.
-    assert db.search_files(query="testing performance") == []
+    assert len(db.search_files(query="testing performance")) == 1
 
 
 def test_scanner_classifies_common_types(tmp_path: Path) -> None:
