@@ -368,6 +368,24 @@ class DatabaseManager:
         """Mark a run CANCELLED. Never reconciles."""
         self._finish_run(run_id, "CANCELLED")
 
+    def recover_stale_runs(self, *, status: str = "FAILED") -> int:
+        """Mark leftover RUNNING runs terminal on process startup.
+
+        A run that was RUNNING when a previous process died can never be
+        completed safely, so it must not reconcile. Call this only at startup
+        (before starting new scans) so a live run is never touched.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE scan_runs SET status = ?, finished_at = CURRENT_TIMESTAMP, "
+                "error_message = COALESCE(error_message, "
+                "'abandoned RUNNING run recovered at startup') "
+                "WHERE status = 'RUNNING'",
+                (status,),
+            )
+            conn.commit()
+            return int(cursor.rowcount)
+
     def complete_scan(self, run_id: int) -> dict:
         """Mark a run COMPLETED and reconcile its scope (rename + MISSING).
 

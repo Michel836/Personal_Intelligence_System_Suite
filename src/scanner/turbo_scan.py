@@ -18,12 +18,19 @@ class TurboScanner:
     def __init__(self):
         self.db = DatabaseManager()
         self.files_queue = queue.Queue(maxsize=50000)
+        self.volume_id = None
+        self.scan_id = None
         self.stats = {
             'files_found': 0,
             'files_saved': 0,
             'total_size': 0,
             'start_time': time.time()
         }
+
+    def set_scan_context(self, volume_id, scan_id):
+        """Attach the current volume/scan-run so persistence is lifecycle-aware."""
+        self.volume_id = volume_id
+        self.scan_id = scan_id
         
     def fast_directory_walk(self, root_path, file_queue, exclude_dirs=None):
         """Ultra-fast directory walker with minimal I/O."""
@@ -144,7 +151,9 @@ class TurboScanner:
             with self.db.get_connection() as conn:
                 count_before = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
 
-            self.db.save_files_batch(files)
+            self.db.save_files_batch(
+                files, volume_id=self.volume_id, scan_id=self.scan_id
+            )
 
             with self.db.get_connection() as conn:
                 count_after = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
