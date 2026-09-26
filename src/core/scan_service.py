@@ -13,6 +13,7 @@ multi-drive workers) so they never need to re-implement it.
 """
 from __future__ import annotations
 
+import queue
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,7 +24,11 @@ from loguru import logger
 from ..scanner.fast_engine import FastScannerEngine
 from ..scanner.models import FileInfo
 from .database import DatabaseManager
+from .perf_config import get_resource_config
 from .volume import VolumeInfo
+
+
+_SCAN_SENTINEL = object()
 
 
 @dataclass
@@ -121,15 +126,70 @@ class ScanService:
         scanner,
         request: ScanRequest,
         cancel_event: Optional[threading.Event],
+        overlap: bool = True,
     ) -> Iterator[FileInfo]:
-        for file_info in scanner.scan_paths(
+        """Yield scanned files, optionally overlapping scan and DB persistence.
+
+        With ``overlap`` the scanner runs in a bounded producer thread while the
+        caller (the single DB writer) consumes, so filesystem traversal is not
+        serialised behind SQLite writes. The queue is bounded, so memory stays
+        constant even for huge trees.
+        """
+        stream = scanner.scan_paths(
             [request.root],
             limit=request.limit,
             include_system=request.include_system,
-        ):
-            if cancel_event is not None and cancel_event.is_set():
-                return
-            yield file_info
+        )
+        if not overlap:
+            for file_info in stream:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                yield file_info
+            return
+
+        work: "queue.Queue[object]" = queue.Queue(maxsize=512)
+        stop = threading.Event()
+
+        def produce() -> None:
+            try:
+                for file_info in stream:
+                    if stop.is_set():
+                        break
+                    while not stop.is_set():
+                        try:
+                            work.put(file_info, timeout=0.2)
+                            break
+                        except queue.Full:
+                            continue
+            finally:
+                while True:
+                    try:
+                        work.put(_SCAN_SENTINEL, timeout=0.2)
+                        break
+                    except queue.Full:
+                        if stop.is_set():
+                            break
+
+        producer = threading.Thread(target=produce, name="pis-scan-producer", daemon=True)
+        producer.start()
+        try:
+            while True:
+                item = work.get()
+                if item is _SCAN_SENTINEL:
+                    break
+                if cancel_event is not None and cancel_event.is_set():
+                    stop.set()
+                    continue
+                assert isinstance(item, FileInfo)
+                yield item
+        finally:
+            stop.set()
+            try:
+                while True:
+                    work.get_nowait()
+            except queue.Empty:
+                pass
+            producer.join(timeout=5)
 
     def run(
         self,
@@ -155,28 +215,32 @@ class ScanService:
             status="RUNNING",
         )
         batch: list[FileInfo] = []
+        bulk = get_resource_config().bulk_index
+        overlap = get_resource_config().scan_overlap
         try:
-            for file_info in self._iter_files(scanner, request, cancel_event):
-                batch.append(file_info)
-                if len(batch) >= request.batch_size:
-                    result.files_upserted += self.db.record_scan_files(result.run_id, batch)
-                    result.files_seen += len(batch)
-                    batch = []
-                    if progress_callback:
-                        progress_callback(result)
+            with self.db.bulk_indexing(bulk):
+                for file_info in self._iter_files(scanner, request, cancel_event, overlap):
+                    batch.append(file_info)
+                    if len(batch) >= request.batch_size:
+                        result.files_upserted += self.db.record_scan_files(result.run_id, batch)
+                        result.files_seen += len(batch)
+                        batch = []
+                        if progress_callback:
+                            progress_callback(result)
 
-            if cancel_event is not None and cancel_event.is_set():
+                if cancel_event is not None and cancel_event.is_set():
+                    if batch:
+                        result.files_upserted += self.db.record_scan_files(result.run_id, batch)
+                        result.files_seen += len(batch)
+                    self.db.cancel_scan(result.run_id)
+                    result.status = "CANCELLED"
+                    return result
+
                 if batch:
                     result.files_upserted += self.db.record_scan_files(result.run_id, batch)
                     result.files_seen += len(batch)
-                self.db.cancel_scan(result.run_id)
-                result.status = "CANCELLED"
-                return result
 
-            if batch:
-                result.files_upserted += self.db.record_scan_files(result.run_id, batch)
-                result.files_seen += len(batch)
-
+            # Triggers restored and FTS rebuilt before reconciliation runs.
             rec = self.db.complete_scan(result.run_id)
             result.status = "COMPLETED"
             result.renamed = int(rec["renamed"])
@@ -220,7 +284,8 @@ class ScanService:
         turbo.db = self.db
         turbo.set_scan_context(result.volume_id, result.run_id)
         try:
-            stats = turbo.turbo_scan(Path(info["root_path"]))
+            with self.db.bulk_indexing(get_resource_config().bulk_index):
+                stats = turbo.turbo_scan(Path(info["root_path"]))
             if stats is None:
                 self.db.cancel_scan(result.run_id)
                 result.status = "CANCELLED"
