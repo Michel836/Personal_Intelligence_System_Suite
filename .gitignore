@@ -54,6 +54,9 @@ databackup/
 *.log
 *.pid
 
+# Validation evidence (local, reproducible, not source)
+.validation/
+
 # Temporary files
 temp/
 tmp/
