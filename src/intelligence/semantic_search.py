@@ -11,6 +11,7 @@ import threading
 
 from loguru import logger
 from ..core.database import DatabaseManager
+from ..core.perf_config import get_resource_config
 from ..core.validation import validate_semantic_search_params, SemanticSearchParams, ValidationError
 from .embeddings import EmbeddingGenerator
 
@@ -52,13 +53,18 @@ class SemanticSearchEngine:
     def _embed_texts(self, texts):
         if not texts:
             return []
-        batch_size = int(os.environ.get("PIS_EMBEDDING_BATCH_SIZE", "32"))
+        batch_size = int(os.environ.get("PIS_EMBEDDING_BATCH_SIZE", "0")) or get_resource_config().embedding_batch_size
         return self.embedding_gen.generate_batch_embeddings(
             texts, batch_size=batch_size, show_progress=False
         )
 
     def _refresh_store(self, store, documents):
-        """Ensure the store covers the current corpus (rebuild or append)."""
+        """Ensure the store covers the current corpus (rebuild or append).
+
+        The store is loaded at most once per process: re-reading ``matrix.npy``
+        on every query would be an O(corpus) disk read. Appends are incremental
+        (in-place memmap writes), so only genuinely new ids are embedded.
+        """
         valid = []
         id_map = {}
         for doc in documents:
@@ -67,7 +73,10 @@ class SemanticSearchEngine:
                 doc_id = int(doc["id"])
                 valid.append((doc_id, content))
                 id_map[doc_id] = doc
-        loaded = store.load()
+        if store.matrix is None or store.meta is None:
+            loaded = store.load()
+        else:
+            loaded = True
         existing = set(store.meta.ids) if (loaded and store.meta) else set()
         if not loaded:
             embeddings = self._embed_texts([t for _, t in valid])
