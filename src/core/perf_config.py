@@ -70,14 +70,19 @@ class HardwareProfile:
         return cls(logical, physical, ram_gb, gpu_name, vram_gb)
 
     def recommended(self) -> dict[str, float]:
-        """Conservative defaults derived from this profile, bounded and safe."""
-        workers = max(1, min(16, self.physical_cores))
+        """Measured defaults for this hardware class (M010-P), bounded and safe.
+
+        Concurrency does not help the CPU/GIL-bound scanner, extractor or
+        archive paths (see the M010-P benchmarks), so those default to their
+        measured optimum rather than the physical core count. Embedding and BLAS
+        values are the measured GPU/matvec optima.
+        """
         return {
-            "scan_workers": workers,
-            "extract_workers": workers,
-            "ocr_workers": workers,
-            "archive_workers": max(1, min(8, self.physical_cores // 2)),
-            "db_batch_size": 2000,
+            "scan_workers": 1,
+            "extract_workers": 2,
+            "ocr_workers": 8,
+            "archive_workers": 1,
+            "db_batch_size": 1000,
             "embedding_batch_size": 128,
             "blas_threads": max(1, min(16, self.physical_cores)),
             "max_ram_gb": round(self.ram_gb * 0.6, 1) if self.ram_gb else 16.0,
@@ -112,7 +117,7 @@ class ResourceConfig:
         return cls(
             scan_workers=_env_int("PIS_SCAN_WORKERS", int(rec["scan_workers"]), minimum=1),
             extract_workers=_env_int("PIS_EXTRACT_WORKERS", int(rec["extract_workers"]), minimum=1),
-            ocr_workers=_env_int("PIS_OCR_WORKERS", 8, minimum=1),
+            ocr_workers=_env_int("PIS_OCR_WORKERS", int(rec["ocr_workers"]), minimum=1),
             archive_workers=_env_int("PIS_ARCHIVE_WORKERS", int(rec["archive_workers"]), minimum=1),
             db_batch_size=_env_int("PIS_DB_BATCH_SIZE", int(rec["db_batch_size"]), minimum=1),
             db_cache_mb=_env_int("PIS_DB_CACHE_MB", 64, minimum=1),
