@@ -225,7 +225,12 @@ class EmbeddingGenerator:
         ascending (matching the reference implementation). ``None`` candidates
         are skipped. Returns ``[(index, similarity), ...]``.
         """
-        if query_embedding is None or not candidate_embeddings or top_k <= 0:
+        if query_embedding is None or candidate_embeddings is None or top_k <= 0:
+            return []
+        if isinstance(candidate_embeddings, np.ndarray):
+            if candidate_embeddings.size == 0:
+                return []
+        elif len(candidate_embeddings) == 0:
             return []
 
         query = np.asarray(query_embedding, dtype=np.float32)

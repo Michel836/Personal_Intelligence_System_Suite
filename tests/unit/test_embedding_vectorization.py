@@ -56,6 +56,20 @@ def test_top_k_clamped_to_corpus_size():
     assert len(EmbeddingGenerator.find_similar(None, query, candidates, 10)) == 2
 
 
+def test_matrix_fast_path_matches_list():
+    rng = np.random.default_rng(2)
+    matrix = rng.standard_normal((200, 32)).astype(np.float32)
+    query = rng.standard_normal(32).astype(np.float32)
+    as_matrix = EmbeddingGenerator.find_similar(None, query, matrix, 10)
+    as_list = EmbeddingGenerator.find_similar(None, query, [row for row in matrix], 10)
+    assert as_matrix == as_list
+
+
+def test_empty_matrix_fast_path():
+    query = np.zeros(4, dtype=np.float32)
+    assert EmbeddingGenerator.find_similar(None, query, np.zeros((0, 4), dtype=np.float32), 5) == []
+
+
 def test_dimension_mismatch_raises():
     query = np.array([1.0, 0.0], dtype=np.float32)
     candidates = [np.array([1.0, 0.0, 0.0], dtype=np.float32)]
