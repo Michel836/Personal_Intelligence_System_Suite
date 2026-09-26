@@ -375,8 +375,13 @@ class DatabaseManager:
             if run["status"] != "RUNNING":
                 raise ValueError(f"scan run {run_id} is {run['status']}, not RUNNING")
             volume = self._volume_row(conn, int(run["volume_id"]))
-            if volume is None or not volume["is_available"]:
-                raise ValueError("refusing to reconcile: volume is not available")
+            available = volume is not None and bool(volume["is_available"])
+
+        if not available:
+            # Never leave a stuck RUNNING run behind; a FAILED run never
+            # reconciles, so files keep their previous lifecycle state.
+            self._finish_run(run_id, "FAILED", error_message="volume unavailable")
+            raise ValueError("refusing to reconcile: volume is not available")
 
         self._finish_run(run_id, "COMPLETED")
         with self.get_connection() as conn:
