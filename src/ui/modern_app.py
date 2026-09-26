@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.core.database import DatabaseManager
+from src.core.scan_service import ScanService
 from src.scanner.fast_engine import FastScannerEngine
 from src.scanner.models import FileType, Priority
 from src.intelligence.semantic_search import SemanticSearchEngine
@@ -538,9 +539,15 @@ def handle_quick_actions():
                 import threading
                 scan_result = {'files_saved': 0, 'completed': False, 'error': None}
                 
+                db = st.session_state.db
                 def run_scan():
+                    session = None
                     try:
+                        session = ScanService(db).session(scan_path)
+                        turbo.db = db
+                        turbo.set_scan_context(session.volume_id, session.run_id)
                         turbo.turbo_scan(scan_path)
+                        session.complete()
                         # Safe access to stats
                         if hasattr(turbo, 'stats') and turbo.stats:
                             scan_result['files_saved'] = turbo.stats.get('files_saved', 0)
@@ -548,6 +555,8 @@ def handle_quick_actions():
                             scan_result['files_saved'] = 0
                         scan_result['completed'] = True
                     except Exception as e:
+                        if session is not None:
+                            session.fail(str(e))
                         scan_result['error'] = str(e)
                         scan_result['completed'] = True
                 
@@ -931,9 +940,13 @@ def _start_multi_drive_scan(paths, max_files, file_limit_mb, threads, filter_mod
                     scan_controller.update_progress(update_data)
                 
                 # Use TurboScanner for ultra-fast scanning instead of old scanner
+                session = None
                 try:
+                    session = ScanService(st.session_state.db).session(path)
                     turbo = TurboScanner()
-                    
+                    turbo.db = st.session_state.db
+                    turbo.set_scan_context(session.volume_id, session.run_id)
+
                     # Run turbo scan on specific path and get detailed stats
                     turbo_stats = turbo.turbo_scan(str(path))
                     
@@ -950,26 +963,28 @@ def _start_multi_drive_scan(paths, max_files, file_limit_mb, threads, filter_mod
                         # TurboScanner returned None - handle gracefully
                         progress_data['current_file'] = f"No new files found in {path}"
                     
+                    session.complete()
                     scan_controller.update_progress(progress_data)
                     
                 except Exception as turbo_error:
+                    if session is not None:
+                        session.fail(str(turbo_error))
                     # Fallback to old scanner if TurboScanner fails
                     st.warning(f"TurboScanner failed for {path}, using fallback scanner: {turbo_error}")
                     files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
-                    
-                    if files:
-                        # Apply filters
-                        filtered_files = _apply_multi_scan_filters(files, filter_mode, file_types, options, file_size_limit)
-                        
-                        # Save to database
-                        if filtered_files:
-                            st.session_state.db.save_files_batch(filtered_files)
-                            total_files_scanned += len(filtered_files)
-                        
-                        # Update progress
-                        progress_data['files_processed'] = total_files_scanned
-                        progress_data['progress'] = total_files_scanned / total_estimated_files
-                        scan_controller.update_progress(progress_data)
+                    filtered_files = _apply_multi_scan_filters(files, filter_mode, file_types, options, file_size_limit) if files else []
+
+                    # Persist the fallback results through the canonical lifecycle.
+                    if filtered_files:
+                        fallback_session = ScanService(st.session_state.db).session(path)
+                        fallback_session.record(filtered_files)
+                        fallback_session.complete()
+                        total_files_scanned += len(filtered_files)
+
+                    # Update progress
+                    progress_data['files_processed'] = total_files_scanned
+                    progress_data['progress'] = total_files_scanned / total_estimated_files
+                    scan_controller.update_progress(progress_data)
                     
             except Exception as e:
                 # Update error count

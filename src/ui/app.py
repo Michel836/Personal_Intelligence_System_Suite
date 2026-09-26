@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.core.database import DatabaseManager
+from src.core.scan_service import ScanService
 from src.scanner.fast_engine import FastScannerEngine
 from src.scanner.models import FileType, Priority
 from src.intelligence.semantic_search import SemanticSearchEngine
@@ -59,6 +60,8 @@ st.set_page_config(
 # Initialize session state
 if 'db' not in st.session_state:
     st.session_state.db = DatabaseManager()
+    # A previous process may have died mid-scan; never let that run reconcile.
+    st.session_state.db.recover_stale_runs()
 if 'scanner_type' not in st.session_state:
     st.session_state.scanner_type = "FastScannerEngine"
 if 'scanner' not in st.session_state:
@@ -240,6 +243,11 @@ def search_page():
             min_size = st.number_input("Min Size (MB)", 0, 10000, 0)
         with col6:
             max_size = st.number_input("Max Size (MB) - 0 = No limit", 0, 10000, 0)
+        include_missing = st.checkbox(
+            "Show missing files (recovery)",
+            value=False,
+            help="Include files absent from a completed scan (state=MISSING)",
+        )
     
     # Always show some results (browse mode)
     show_results = search_button or query or True  # Always show results
@@ -254,7 +262,8 @@ def search_page():
                 extension=extension if extension else None,
                 min_size=min_size * 1024 * 1024 if min_size > 0 else None,
                 max_size=max_size * 1024 * 1024 if max_size > 0 else None,
-                limit=max_results
+                limit=max_results,
+                include_missing=include_missing,
             )
         
         # Display results with interactive table
@@ -2215,6 +2224,7 @@ def background_scan_worker(paths, max_files, file_limit_mb, include_system, prog
         # Import here to avoid issues with Streamlit session state in threads
         from src.scanner.fast_engine import FastScannerEngine
         from src.core.database import DatabaseManager
+        from src.core.scan_service import ScanService
         from src.utils.disk_utils import validate_scan_path
         import time
         from datetime import datetime
@@ -2222,6 +2232,7 @@ def background_scan_worker(paths, max_files, file_limit_mb, include_system, prog
         # Create new instances for the thread (can't share session state across threads)
         scanner = FastScannerEngine()
         db = DatabaseManager()
+        service = ScanService(db)
         
         total_files_scanned = 0
         total_estimated_files = sum(validation['estimated_files'] for validation in 
@@ -2284,24 +2295,25 @@ def background_scan_worker(paths, max_files, file_limit_mb, include_system, prog
             files_per_drive = max_files
             file_size_limit = file_limit_mb * 1024 * 1024 if file_limit_mb > 0 else None
             
-            # Scan files
-            files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
-            
-            if files:
+            # Scan files through the canonical lifecycle.
+            session = service.session(path)
+            try:
+                files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
+
                 # Apply file size filter
                 filtered_files = []
                 for file_info in files:
                     if file_size_limit and file_info.size_bytes > file_size_limit:
                         continue
                     filtered_files.append(file_info)
-                
-                # Save to database with batch method for better performance
-                if hasattr(db, 'save_files_batch'):
-                    saved_count = db.save_files_batch(filtered_files)
-                else:
-                    saved_count = db.save_files(filtered_files)
-                    
-                total_files_scanned += len(filtered_files)
+
+                if filtered_files:
+                    session.record(filtered_files)
+                    total_files_scanned += len(filtered_files)
+                session.complete()
+            except Exception as scan_error:
+                session.fail(str(scan_error))
+                raise
                 
                 # Check if we've reached the global file limit
                 if max_files and total_files_scanned >= max_files:
@@ -2507,6 +2519,7 @@ def _start_advanced_scan(paths, max_files, file_limit_mb, threads):
         st.session_state.scan_running = True
         
         for i, path in enumerate(paths):
+            session = None
             # Update scan controller current path
             progress_data['current_path'] = str(path)
             scan_controller.update_progress(progress_data)
@@ -2544,28 +2557,28 @@ def _start_advanced_scan(paths, max_files, file_limit_mb, threads):
                     scan_controller.update_progress(update_data)
                 
                 # Use scan_paths instead of fast_scan for better progress tracking
+                session = ScanService(st.session_state.db).session(path)
                 files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
-                
-                if files:
-                    # Apply file size filter
-                    filtered_files = []
-                    for file_info in files:
-                        if file_size_limit and file_info.size_bytes > file_size_limit:
-                            continue
-                        filtered_files.append(file_info)
-                    
-                    # Save to database
-                    if filtered_files:
-                        st.session_state.db.save_files_batch(filtered_files)
-                        total_files_scanned += len(filtered_files)
-                        
-                        # Update progress
-                        progress_data['files_processed'] = total_files_scanned
-                        progress_data['progress'] = min(1.0, total_files_scanned / max(total_estimated_files or 1, 1))
-                        scan_controller.update_progress(progress_data)
-                    
+
+                # Apply file size filter
+                filtered_files = []
+                for file_info in files:
+                    if file_size_limit and file_info.size_bytes > file_size_limit:
+                        continue
+                    filtered_files.append(file_info)
+
+                if filtered_files:
+                    session.record(filtered_files)
+                    total_files_scanned += len(filtered_files)
+                    progress_data['files_processed'] = total_files_scanned
+                    progress_data['progress'] = min(1.0, total_files_scanned / max(total_estimated_files or 1, 1))
+                    scan_controller.update_progress(progress_data)
+                session.complete()
+
             except Exception as e:
                 # Update error count
+                if session is not None:
+                    session.fail(str(e))
                 progress_data['errors'] = progress_data.get('errors', 0) + 1
                 scan_controller.update_progress(progress_data)
                 st.error(f"Erreur lors du scan de {path}: {str(e)}")
