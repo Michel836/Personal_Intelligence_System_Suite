@@ -171,3 +171,37 @@ def test_ai_unavailable_degrades_gracefully(ui_db: Path) -> None:
 def test_modern_app_renders(ui_db: Path) -> None:
     at = _app(MODERN_APP)
     assert not at.exception, [e.message for e in at.exception]
+
+
+def test_final_uninterrupted_user_journey(ui_db: Path, tmp_path: Path) -> None:
+    volume = VolumeInfo(stable_key="UI", device="UI", mountpoint=str(tmp_path), is_available=True)
+    root = _seed(tmp_path)
+    db = DatabaseManager()
+    service = ScanService(db)
+
+    # search filename + content after initial scan
+    at = _search(_nav(_app(), "🔍 Search"), "cancer")
+    assert _result_count(at) == 1
+    at = _search(at, "immunotherapy")
+    assert _result_count(at) == 1
+
+    # modify + rescan -> refreshed metadata
+    (root / "Documents" / "cancer.txt").write_text("cancer immunotherapy study extended", encoding="utf-8")
+    service.run(ScanRequest(root=root, volume=volume))
+
+    # rename + rescan -> stable id
+    file_id = db.search_files(query="cancer")[0]["id"]
+    (root / "Documents" / "cancer.txt").rename(root / "Documents" / "oncology.txt")
+    service.run(ScanRequest(root=root, volume=volume))
+    assert db.search_files(query="oncology")[0]["id"] == file_id
+
+    # delete + rescan -> recovery view
+    (root / "Documents" / "oncology.txt").unlink()
+    service.run(ScanRequest(root=root, volume=volume))
+    assert _result_count(_search(_nav(_app(), "🔍 Search"), "oncology")) == 0
+    assert _result_count(_search(_nav(_app(), "🔍 Search"), "oncology", include_missing=True)) == 1
+
+    # restart -> persisted index coherent, dashboard renders
+    assert _result_count(_search(_nav(_app(), "🔍 Search"), "résumé")) == 1
+    assert not _nav(_app(), "📊 Dashboard").exception
+    assert not _nav(_app(), "👁️ File Viewer").exception
