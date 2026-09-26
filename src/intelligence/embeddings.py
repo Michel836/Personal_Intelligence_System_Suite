@@ -233,17 +233,25 @@ class EmbeddingGenerator:
         if query_norm == 0.0:
             return []
 
-        indices: List[int] = []
-        vectors: List[np.ndarray] = []
-        for i, candidate in enumerate(candidate_embeddings):
-            if candidate is None:
-                continue
-            indices.append(i)
-            vectors.append(np.asarray(candidate, dtype=np.float32))
-        if not vectors:
-            return []
+        if isinstance(candidate_embeddings, np.ndarray):
+            # Fast path: pre-stacked matrix avoids the per-call list->matrix copy.
+            matrix = np.asarray(candidate_embeddings, dtype=np.float32)
+            if matrix.ndim != 2:
+                raise ValueError("candidate matrix must be 2-dimensional")
+            index_array = np.arange(matrix.shape[0])
+        else:
+            indices: List[int] = []
+            vectors: List[np.ndarray] = []
+            for i, candidate in enumerate(candidate_embeddings):
+                if candidate is None:
+                    continue
+                indices.append(i)
+                vectors.append(np.asarray(candidate, dtype=np.float32))
+            if not vectors:
+                return []
+            matrix = np.vstack(vectors)
+            index_array = np.asarray(indices)
 
-        matrix = np.vstack(vectors)
         if matrix.shape[1] != query.shape[0]:
             raise ValueError(
                 "embedding dimension mismatch: "
@@ -254,7 +262,6 @@ class EmbeddingGenerator:
         norms[norms == 0.0] = 1e-12
         similarities = (matrix @ query) / (norms * query_norm)
 
-        index_array = np.asarray(indices)
         k = min(int(top_k), len(similarities))
         # lexsort: last key is primary -> (-similarity, index) ascending.
         order = np.lexsort((index_array, -similarities))[:k]
