@@ -49,10 +49,12 @@ class FastScannerEngine:
         }
         
         # System directories to skip
+        # Matched as whole path components (see _should_skip_directory), never
+        # as substrings, so directories like ~/recovery_notes stay indexed.
         self._skip_dirs = {
             'windows', 'program files', 'program files (x86)',
             'programdata', '$recycle.bin', 'system volume information',
-            'windows.old', 'recovery', 'appdata\\local\\temp'
+            'windows.old', 'recovery'
         }
     
     def fast_scan(
@@ -166,9 +168,17 @@ class FastScannerEngine:
             logger.info(f"Scan completed: {file_count:,} files in {elapsed:.1f}s")
     
     def _should_skip_directory(self, dir_path: Path) -> bool:
-        """Quick directory skip check."""
-        dir_lower = str(dir_path).lower()
-        return any(skip_dir in dir_lower for skip_dir in self._skip_dirs)
+        """Quick directory skip check.
+
+        Matches *path components* (case-insensitive), not arbitrary substrings,
+        so a legitimate path such as ``~/recovery_notes`` or ``~/windows-notes``
+        is not silently pruned from the index.
+        """
+        parts = {part.lower() for part in Path(dir_path).parts}
+        if parts & self._skip_dirs:
+            return True
+        lowered = str(dir_path).lower().replace("/", "\\")
+        return "\\appdata\\local\\temp" in lowered
     
     def _should_skip_file_fast(self, file_path: Path) -> bool:
         """Ultra-fast file skip check."""
