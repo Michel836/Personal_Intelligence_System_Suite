@@ -2649,6 +2649,42 @@ def statistics_page():
         st.dataframe(df, use_container_width=True)
 
 
+def _render_archive_details(result: dict) -> None:
+    """Archive-aware detail block for a search/result row (M009J.17)."""
+    try:
+        kind = result.get("document_kind")
+        if kind == "ARCHIVE_MEMBER":
+            st.caption("📦 Archive member")
+            st.caption(f"Member path: {result.get('archive_member_path', '?')}")
+            st.caption(f"Extraction: {result.get('extraction_state', '?')}")
+            db = st.session_state.get("db")
+            if db is not None:
+                from src.archives.viewer import member_detail
+
+                detail = member_detail(db, result.get("id"))
+                if detail:
+                    st.caption(f"Parent archive: {detail['parent_name']}")
+                    if detail["preview"]:
+                        st.text_area(
+                            "Content preview (bounded)", detail["preview"],
+                            height=140, key=f"arc_prev_{result.get('id')}",
+                        )
+        elif result.get("file_type") == "archive":
+            db = st.session_state.get("db")
+            if db is not None:
+                from src.archives.viewer import container_summary
+
+                summary = container_summary(db, result.get("id"))
+                if summary:
+                    st.caption(
+                        f"📦 {summary['format']} · {summary['member_count']} members · "
+                        f"{summary['compressed_human']} → {summary['expanded_human']} · "
+                        f"status {summary['status']}"
+                    )
+    except Exception:  # noqa: BLE001 - viewer enrichment must never break the page
+        pass
+
+
 def file_viewer_page():
     """Dedicated file viewing and management page."""
     st.header("👁️ File Viewer & Content Explorer")
@@ -2739,6 +2775,8 @@ def file_viewer_page():
                                 st.success("Opening location...")
                             except Exception as e:
                                 st.error(f"Could not open: {e}")
+
+                    _render_archive_details(result)
     
     st.markdown("---")
     

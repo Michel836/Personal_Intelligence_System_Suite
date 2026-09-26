@@ -96,8 +96,44 @@ class AutoExtractor:
             logger.error(f"Error getting extraction candidates: {e}")
             return []
     
+    def index_archives(self, limit: int = 10000, force: bool = False) -> Dict[str, Any]:
+        """Discover and index archives as virtual members (M009J.18).
+
+        Archive discovery is kept separate from member content extraction: this
+        method lists members and (per policy) extracts supported member text.
+        """
+        from ..archives.indexer import index_archives_in_db
+        from ..archives.limits import ArchivePolicy
+        from ..core.database import DatabaseManager
+
+        policy = ArchivePolicy.from_env()
+        if not policy.enabled:
+            return {"enabled": False, "archives": 0, "members": 0}
+        try:
+            db = DatabaseManager(self.db_path)
+            results = index_archives_in_db(db, limit=limit, force=force)
+        except Exception as exc:  # noqa: BLE001 - archives must never break extraction
+            logger.warning(f"archive indexing skipped: {exc}")
+            return {"enabled": True, "archives": 0, "members": 0, "error": str(exc)}
+        statuses: Dict[str, int] = {}
+        for r in results:
+            statuses[r.status] = statuses.get(r.status, 0) + 1
+        summary = {
+            "enabled": True,
+            "archives": len(results),
+            "members": sum(r.member_count for r in results),
+            "extracted": sum(r.extracted for r in results),
+            "nested": sum(r.nested for r in results),
+            "statuses": statuses,
+        }
+        self.stats.setdefault("archives_indexed", 0)
+        self.stats["archives_indexed"] += len(results)
+        logger.info(f"Archive indexing: {summary}")
+        return summary
+
     def extract_priority_batch(self, batch_size: int = 100, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """Extract content from a priority batch of files."""
+        self.index_archives()
         candidates = self.get_extraction_candidates(batch_size)
         
         if not candidates:
@@ -167,6 +203,7 @@ class AutoExtractor:
     
     def extract_all_candidates(self, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """Extract content from all available candidates."""
+        self.index_archives()
         all_candidates = self.get_extraction_candidates()
         
         if not all_candidates:
