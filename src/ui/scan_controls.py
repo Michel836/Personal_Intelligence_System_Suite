@@ -396,7 +396,14 @@ class ScanController:
             st.markdown("**📈 Performance Metrics**")
             current_path = self.scan_state.get('current_path', '')
             if current_path:
-                st.write(f"Current path: {current_path.split('/')[-1] if '/' in current_path else current_path.split('\\')[-1] if '\\' in current_path else current_path}")
+                display_path = (
+                    current_path.split('/')[-1]
+                    if '/' in current_path
+                    else current_path.split('\\')[-1]
+                    if '\\' in current_path
+                    else current_path
+                )
+                st.write(f"Current path: {display_path}")
             
             # Progress percentage
             progress = self.scan_state['progress'] * 100

@@ -6,8 +6,10 @@ This intentionally does not scan user data volumes. It audits the repository its
 from __future__ import annotations
 
 import ast
+import io
 import json
 import re
+import tokenize
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,12 +35,25 @@ def parse_failures(files: list[Path]) -> list[dict[str, str]]:
 
 
 def markers(files: list[Path]) -> list[dict[str, object]]:
+    # Markers are meaningful only in comments and string literals. Scanning raw
+    # lines reported Streamlit ``placeholder=`` keyword arguments (and any
+    # identifier named ``placeholder``) as debt, so tokenize the source instead.
     pattern = re.compile(r"\b(TODO|FIXME|XXX|HACK|placeholder|not implemented)\b", re.I)
     hits: list[dict[str, object]] = []
     for path in files:
-        for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-            if pattern.search(line):
-                hits.append({"path": str(path.relative_to(ROOT)), "line": number, "text": line.strip()[:240]})
+        source = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            token_stream = tokenize.generate_tokens(io.StringIO(source).readline)
+            candidates = [
+                (token.start[0], token.string)
+                for token in token_stream
+                if token.type in (tokenize.COMMENT, tokenize.STRING)
+            ]
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            candidates = list(enumerate(source.splitlines(), 1))
+        for number, text in candidates:
+            if pattern.search(text):
+                hits.append({"path": str(path.relative_to(ROOT)), "line": number, "text": text.strip()[:240]})
     return hits
 
 

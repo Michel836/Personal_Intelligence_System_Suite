@@ -109,23 +109,20 @@ class SimpleTester:
         
         # Test TurboScanner
         def test_turbo_import():
-            sys.path.append(str(Path(__file__).parent))
-            from turbo_scan import TurboScanner
+            from src.scanner.turbo_scan import TurboScanner
             return True
             
         self.run_test("scanner", "turbo_import", test_turbo_import)
         
         def test_turbo_init():
-            sys.path.append(str(Path(__file__).parent))
-            from turbo_scan import TurboScanner
+            from src.scanner.turbo_scan import TurboScanner
             scanner = TurboScanner()
             return scanner is not None
             
         self.run_test("scanner", "turbo_init", test_turbo_init)
         
         def test_file_type():
-            sys.path.append(str(Path(__file__).parent))
-            from turbo_scan import TurboScanner
+            from src.scanner.turbo_scan import TurboScanner
             scanner = TurboScanner()
             result = scanner.get_file_type('.pdf')
             return result == 'document'

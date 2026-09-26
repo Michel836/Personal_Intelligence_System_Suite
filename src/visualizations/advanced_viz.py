@@ -749,11 +749,14 @@ class AdvancedVisualizations:
         # Limit to top folders for readability
         folder_data = folder_data.nlargest(20, 'size_mb')
         
+        # Backslash kept in a variable: f-string expressions cannot contain
+        # backslashes on Python 3.11 (the declared/CI interpreter).
+        win_sep = '\\'
         fig = go.Figure(go.Treemap(
-            labels=folder_data['folder'].apply(lambda x: x.split('\\')[-1] or x.split('/')[-1] or 'Root'),
+            labels=folder_data['folder'].apply(lambda x: x.split(win_sep)[-1] or x.split('/')[-1] or 'Root'),
             parents=["" for _ in range(len(folder_data))],
             values=folder_data['size_mb'],
-            text=[f"{row['folder'].split('\\')[-1] or 'Root'}<br>{row['id']} files<br>{row['size_mb']:.1f} MB" 
+            text=[f"{row['folder'].split(win_sep)[-1] or 'Root'}<br>{row['id']} files<br>{row['size_mb']:.1f} MB"
                   for _, row in folder_data.iterrows()],
             textinfo="label+text",
             hovertemplate='<b>%{label}</b><br>Size: %{value:.1f} MB<br><extra></extra>',

@@ -867,6 +867,10 @@ timeline.create_timeline(
 
 ### Command Line Interface
 
+> **Not implemented in the current revision.** No `src/cli.py` module or
+> `36tb-intel` console script exists yet; the commands below describe a planned
+> surface and are not executable. Use the Streamlit UI or the `scripts/` helpers.
+
 ```bash
 # Scanning operations
 36tb-intel scan [drive] [options]
@@ -896,6 +900,9 @@ timeline.create_timeline(
 ```
 
 ### API Endpoints
+
+> **Not implemented in the current revision.** No `src/api/` FastAPI application
+> exists yet; the endpoints below describe a planned surface and are not served.
 
 ```yaml
 # RESTful API endpoints

@@ -30,8 +30,7 @@ from src.ui.dashboard import UnifiedDashboard
 from src.ui.onboarding import OnboardingFlow, NavigationManager
 
 # Import TurboScanner for ultra-fast scanning
-sys.path.append(str(Path(__file__).parent.parent.parent / "scripts"))
-from turbo_scan import TurboScanner
+from src.scanner.turbo_scan import TurboScanner
 from src.ui.advanced_search import AdvancedSearchInterface
 from src.ui.disk_selector import DiskSelector
 from src.ui.scan_controls import ScanController

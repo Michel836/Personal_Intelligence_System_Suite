@@ -2,12 +2,7 @@
 """
 Test du système d'auto-extraction pour 36TB Intelligence
 """
-import sys
-import os
-from pathlib import Path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
-
-from extractors.auto_extractor import AutoExtractor
+from src.extractors.auto_extractor import AutoExtractor
 
 def test_auto_extraction():
     """Test le système d'auto-extraction."""

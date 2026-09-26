@@ -8,7 +8,7 @@ This repository uses a fail-closed validation workflow derived from the process 
 2. Work on an isolated feature/audit branch. Keep `main` untouched until evidence is reviewed.
 3. Use the canonical project virtual environment when available: `./.venv/bin/python`.
 4. Persist evidence for every validation run under `.validation/<UTC timestamp>/`.
-5. A validation result is tied to the exact branch, HEAD commit and patch SHA-256 recorded in `validation.json`.
+5. A validation result is bound to the complete validated repository state recorded in `validation.json`: `branch`, `head`, `base_main`, `tree_state` (`CLEAN`/`DIRTY`), `committed_patch_sha256` (committed delta vs `main`), `working_tree_sha256` (content manifest of tracked and untracked non-ignored files) and `validated_state_sha256` (deterministic combination of the above). The fingerprint covers **staged, unstaged and untracked relevant changes**, not only committed work. Ignored paths (`.git/`, `.venv/`, `.validation/`, caches, bytecode, runtime data) never contribute.
 6. Any repair invalidates stale evidence. Re-run validation after every material code change.
 7. No validation harness command may crawl or index real user data volumes. Functional filesystem scans are a later, explicit test phase using controlled fixtures first.
 8. Do not silently ignore failures. A failed gate keeps the overall validation red.
@@ -21,7 +21,7 @@ python scripts/run_validation.py
 bash scripts/quality.sh
 ```
 
-`run_validation.py` records stdout and stderr for each gate independently and writes both `validation.json` and `validation.txt`.
+`run_validation.py` records stdout and stderr for each gate independently and writes both `validation.json` and `validation.txt`. It fingerprints the repository state before the gates run and re-computes it afterwards: `state_stable_during_gates` records whether any gate mutated the validated state, and `post_validation_state_sha256` records the result of that check.
 
 ## Current baseline gates
 
@@ -58,7 +58,7 @@ For each function the evidence chain is: detection -> reproducible failure -> bo
 
 ## Review gate
 
-A change is not ready to merge merely because tests pass. Review findings are classified as blocker / major / minor / rebutted / ambiguous. Any repair requires a fresh patch hash and fresh validation evidence. No stale evidence may be reused after the patch changes.
+A change is not ready to merge merely because tests pass. Review findings are classified as blocker / major / minor / rebutted / ambiguous. Any repair requires a fresh `validated_state_sha256` and fresh validation evidence. Evidence whose `validated_state_sha256` does not match the repository state being reviewed is stale and must not be reused, even if the branch and HEAD are unchanged.
 
 ## Safety for the 36TB use case
 

@@ -8,9 +8,6 @@ from datetime import datetime
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor
-import sys
-
-sys.path.append(str(Path(__file__).parent.parent))
 from src.core.database import DatabaseManager
 from loguru import logger
 

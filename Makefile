@@ -1,6 +1,6 @@
 # Makefile for 36TB Intelligence
 
-.PHONY: help install install-dev setup test lint format clean run scan ui api
+.PHONY: help install install-dev setup test lint format clean run scan ui
 
 # Default target
 help:
@@ -17,7 +17,6 @@ help:
 	@echo "  run         Run quick scan test"
 	@echo "  scan        Scan specific drive (make scan DRIVE=C:)"
 	@echo "  ui          Start Streamlit UI"
-	@echo "  api         Start FastAPI server"
 
 # Installation
 install:
@@ -82,9 +81,6 @@ endif
 
 ui:
 	streamlit run src/ui/app.py
-
-api:
-	uvicorn src.api.main:app --reload
 
 # Development utilities
 check-install:
