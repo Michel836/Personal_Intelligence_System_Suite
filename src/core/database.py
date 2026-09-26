@@ -20,6 +20,31 @@ def default_db_path() -> str:
     return os.environ.get("PIS_DB_PATH") or "data/indexes/files.db"
 
 
+# Document kind discriminates physical files from archive members (M009J.3).
+DOC_KIND_PHYSICAL = "PHYSICAL_FILE"
+DOC_KIND_MEMBER = "ARCHIVE_MEMBER"
+
+_MEMBER_TYPE_BY_EXT = {
+    ".pdf": "document", ".doc": "document", ".docx": "document", ".odt": "document",
+    ".rtf": "document", ".txt": "document", ".md": "document", ".ods": "document",
+    ".xlsx": "document", ".xls": "document", ".csv": "document", ".ppt": "document",
+    ".pptx": "document", ".odp": "document",
+    ".jpg": "image", ".jpeg": "image", ".png": "image", ".gif": "image",
+    ".bmp": "image", ".tiff": "image", ".webp": "image",
+    ".zip": "archive", ".7z": "archive", ".rar": "archive", ".tar": "archive",
+    ".gz": "archive", ".tgz": "archive", ".bz2": "archive", ".xz": "archive",
+    ".py": "code", ".js": "code", ".html": "code", ".css": "code", ".json": "code",
+    ".xml": "code", ".yml": "code", ".yaml": "code", ".java": "code", ".c": "code",
+    ".cpp": "code", ".h": "code", ".cs": "code", ".php": "code", ".rb": "code",
+    ".go": "code", ".rs": "code", ".ts": "code",
+}
+
+
+def _member_file_type(extension: str) -> str:
+    """Infer a search-friendly file_type for an archive member."""
+    return _MEMBER_TYPE_BY_EXT.get((extension or "").lower(), "other")
+
+
 # --- Lexical search (FTS5) -------------------------------------------------
 #
 # The FTS index is external-content (``content=files``), so it must be kept in
@@ -144,6 +169,9 @@ class DatabaseManager:
 
             # Volume / scan-run / lifecycle state
             self._ensure_lifecycle(conn)
+
+            # Archive container / virtual-member support (additive, non-destructive)
+            self._ensure_archives(conn)
 
             # Stats table
             conn.execute("""
@@ -279,6 +307,243 @@ class DatabaseManager:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_last_seen ON files(last_seen_scan_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_identity ON files(volume_id, device_id, inode)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_scan_runs_volume ON scan_runs(volume_id)")
+
+    # --- Archives / virtual members (M009J.4) ----------------------------
+    #
+    # Archive members are represented as *virtual documents*: rows in the
+    # canonical ``files`` table whose ``document_kind`` is ARCHIVE_MEMBER and
+    # whose ``path`` is ``<parent>!/<member>``. This reuses FTS, lifecycle and
+    # semantic indexing while keeping physical and member paths unambiguous.
+    def _ensure_archives(self, conn) -> None:
+        """Add archive columns/indexes without touching existing rows."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(files)")}
+        columns = {
+            "document_kind": "TEXT DEFAULT 'PHYSICAL_FILE'",
+            "archive_parent_id": "INTEGER",
+            "archive_member_path": "TEXT",
+            "archive_depth": "INTEGER DEFAULT 0",
+            "archive_format": "TEXT",
+            "member_type": "TEXT",
+            "member_compressed_size": "INTEGER",
+            "member_uncompressed_size": "INTEGER",
+            "member_crc": "TEXT",
+            "member_encrypted": "INTEGER DEFAULT 0",
+            "member_state": "TEXT DEFAULT 'ACTIVE'",
+            "extraction_state": "TEXT DEFAULT 'PENDING'",
+            "archive_fingerprint": "TEXT",
+            "archive_indexed_at": "TEXT",
+            "archive_processing_version": "TEXT",
+            "archive_status": "TEXT",
+            "archive_member_count": "INTEGER",
+            "archive_encrypted_count": "INTEGER",
+            "archive_compressed_size": "INTEGER",
+            "archive_expanded_size": "INTEGER",
+        }
+        for name, decl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE files ADD COLUMN {name} {decl}")
+                logger.info(f"Added files.{name} for archive support")
+        conn.execute(
+            "UPDATE files SET document_kind = 'PHYSICAL_FILE' "
+            "WHERE document_kind IS NULL OR document_kind = ''"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_kind ON files(document_kind)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_archive_parent ON files(archive_parent_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_member_state ON files(member_state)")
+
+    def set_archive_index_state(
+        self,
+        parent_id: int,
+        *,
+        fingerprint: str,
+        status: str,
+        member_count: int = 0,
+        encrypted_count: int = 0,
+        compressed_size: int = 0,
+        expanded_size: int = 0,
+        format_name: Optional[str] = None,
+        processing_version: str = "",
+    ) -> None:
+        """Persist the container-level inspection result on the parent row."""
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE files SET
+                    archive_fingerprint = ?, archive_status = ?,
+                    archive_member_count = ?, archive_encrypted_count = ?,
+                    archive_compressed_size = ?, archive_expanded_size = ?,
+                    archive_format = COALESCE(?, archive_format),
+                    archive_processing_version = ?,
+                    archive_indexed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (fingerprint, status, member_count, encrypted_count, compressed_size,
+                 expanded_size, format_name, processing_version, parent_id),
+            )
+            conn.commit()
+
+    def get_archive_index_state(self, parent_id: int) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """SELECT archive_fingerprint, archive_status, archive_member_count,
+                          archive_encrypted_count, archive_compressed_size,
+                          archive_expanded_size, archive_format,
+                          archive_processing_version, archive_indexed_at
+                   FROM files WHERE id = ?""",
+                (parent_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_archive_members(
+        self,
+        parent_id: int,
+        parent_path: str,
+        members: List[Dict[str, Any]],
+        *,
+        volume_id: Optional[int] = None,
+        scan_id: Optional[int] = None,
+        archive_format: str = "",
+        depth: int = 1,
+    ) -> List[int]:
+        """Upsert virtual member rows; returns the ids of written members."""
+        ids: List[int] = []
+        with self.get_connection() as conn:
+            for m in members:
+                member_path = m["member_path"]
+                vpath = f"{parent_path}!/{member_path}"
+                filename = member_path.rsplit("/", 1)[-1]
+                ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+                meta = {k: m.get(k) for k in (
+                    "crc", "member_type", "archive_format", "modified_at", "raw_name",
+                ) if m.get(k) is not None}
+                conn.execute(
+                    """
+                    INSERT INTO files (
+                        path, filename, extension, size_bytes, file_type, priority,
+                        modified_at, metadata, parent_dir, depth, content_extracted,
+                        volume_id, last_seen_scan_id, state, indexed_at,
+                        document_kind, archive_parent_id, archive_member_path,
+                        archive_depth, archive_format, member_type,
+                        member_compressed_size, member_uncompressed_size, member_crc,
+                        member_encrypted, member_state, extraction_state
+                    ) VALUES (?, ?, ?, ?, ?, 'MEDIUM', ?, ?, ?, ?, 0, ?, ?, 'ACTIVE', CURRENT_TIMESTAMP,
+                              'ARCHIVE_MEMBER', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+                    ON CONFLICT(path) DO UPDATE SET
+                        filename = excluded.filename,
+                        extension = excluded.extension,
+                        size_bytes = excluded.size_bytes,
+                        file_type = excluded.file_type,
+                        modified_at = excluded.modified_at,
+                        metadata = excluded.metadata,
+                        archive_parent_id = excluded.archive_parent_id,
+                        archive_member_path = excluded.archive_member_path,
+                        archive_depth = excluded.archive_depth,
+                        archive_format = excluded.archive_format,
+                        member_type = excluded.member_type,
+                        member_compressed_size = excluded.member_compressed_size,
+                        member_uncompressed_size = excluded.member_uncompressed_size,
+                        member_encrypted = excluded.member_encrypted,
+                        member_state = 'ACTIVE',
+                        state = 'ACTIVE',
+                        last_seen_scan_id = COALESCE(excluded.last_seen_scan_id, files.last_seen_scan_id),
+                        extraction_state = CASE
+                            WHEN files.member_crc IS NOT excluded.member_crc
+                              OR files.member_uncompressed_size IS NOT excluded.member_uncompressed_size
+                            THEN excluded.extraction_state ELSE files.extraction_state END,
+                        content_extracted = CASE
+                            WHEN files.member_crc IS NOT excluded.member_crc
+                              OR files.member_uncompressed_size IS NOT excluded.member_uncompressed_size
+                            THEN 0 ELSE files.content_extracted END,
+                        content_text = CASE
+                            WHEN files.member_crc IS NOT excluded.member_crc
+                              OR files.member_uncompressed_size IS NOT excluded.member_uncompressed_size
+                            THEN NULL ELSE files.content_text END,
+                        member_crc = excluded.member_crc,
+                        indexed_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        vpath, filename, ext, int(m.get("uncompressed_size") or 0),
+                        _member_file_type(ext), m.get("modified_at"),
+                        json.dumps(meta) if meta else None, parent_path, depth,
+                        volume_id, scan_id, parent_id, member_path, depth,
+                        archive_format, m.get("member_type", "FILE"),
+                        int(m.get("compressed_size") or 0),
+                        int(m.get("uncompressed_size") or 0), m.get("crc"),
+                        1 if m.get("is_encrypted") else 0,
+                        "PENDING" if m.get("member_type", "FILE") == "FILE" else "SKIPPED",
+                    ),
+                )
+                ids.append(1)
+            conn.commit()
+        return ids
+
+    def reconcile_archive_members(
+        self, parent_id: int, seen_paths: List[str], *, scan_id: Optional[int] = None
+    ) -> Dict[str, int]:
+        """Mark seen members ACTIVE and unseen members MISSING (never delete)."""
+        with self.get_connection() as conn:
+            existing = conn.execute(
+                "SELECT path FROM files WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ?",
+                (parent_id,),
+            ).fetchall()
+            existing_paths = {r[0] for r in existing}
+            seen = set(seen_paths)
+            missing = existing_paths - seen
+            for path in missing:
+                conn.execute(
+                    "UPDATE files SET member_state = 'MISSING', state = 'MISSING' "
+                    "WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ? AND path = ?",
+                    (parent_id, path),
+                )
+            if seen and scan_id is not None:
+                for path in seen & existing_paths:
+                    conn.execute(
+                        "UPDATE files SET last_seen_scan_id = ?, member_state = 'ACTIVE', state = 'ACTIVE' "
+                        "WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ? AND path = ?",
+                        (scan_id, parent_id, path),
+                    )
+            conn.commit()
+        return {"missing": len(missing), "seen": len(seen)}
+
+    def mark_archive_members_missing(self, parent_id: int) -> int:
+        """When a parent archive disappears, its members must not stay ACTIVE."""
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE files SET member_state = 'MISSING', state = 'MISSING' "
+                "WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ? AND state = 'ACTIVE'",
+                (parent_id,),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+
+    def get_archive_members(
+        self, parent_id: int, *, include_missing: bool = False, limit: int = 10000
+    ) -> List[Dict[str, Any]]:
+        clause = "" if include_missing else "AND member_state = 'ACTIVE'"
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"""SELECT * FROM files
+                    WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ? {clause}
+                    ORDER BY archive_member_path ASC LIMIT ?""",
+                (parent_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_member_extraction(
+        self, member_id: int, *, content: Optional[str], state: str
+    ) -> None:
+        """Record member extraction outcome (content is optional metadata)."""
+        with self.get_connection() as conn:
+            if content is not None:
+                conn.execute(
+                    "UPDATE files SET content_text = ?, content_extracted = 1, extraction_state = ? WHERE id = ?",
+                    (content, state, member_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE files SET extraction_state = ? WHERE id = ?", (state, member_id)
+                )
+            conn.commit()
 
     def _upsert_volume(self, conn, volume: VolumeInfo) -> int:
         conn.execute("""
@@ -695,6 +960,7 @@ class DatabaseManager:
         extension: Optional[str],
         min_size: Optional[int],
         max_size: Optional[int],
+        document_kind: Optional[str] = None,
     ) -> tuple[list[str], list[Any]]:
         """Build the SQL filter conditions shared by every search path."""
         conditions: list[str] = []
@@ -715,6 +981,9 @@ class DatabaseManager:
         if max_size is not None:
             conditions.append("size_bytes <= ?")
             params.append(max_size)
+        if document_kind:
+            conditions.append("COALESCE(document_kind, 'PHYSICAL_FILE') = ?")
+            params.append(document_kind)
         return conditions, params
 
     @staticmethod
@@ -795,6 +1064,7 @@ class DatabaseManager:
         max_size: Optional[int] = None,
         limit: int = 100,
         include_missing: bool = False,
+        document_kind: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search files by lexical text plus metadata filters.
 
@@ -805,7 +1075,7 @@ class DatabaseManager:
         to contiguous ``LIKE`` matching instead of raising.
         """
         conditions, params = self._build_filter_conditions(
-            file_type, priority, extension, min_size, max_size
+            file_type, priority, extension, min_size, max_size, document_kind
         )
         if not include_missing:
             conditions.append("COALESCE(files.state, 'ACTIVE') = 'ACTIVE'")
