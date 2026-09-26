@@ -1,0 +1,44 @@
+name: Quality Baseline
+
+on:
+  push:
+    branches: [main, "feat/**", "fix/**", "audit/**"]
+  pull_request:
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install minimal runtime and validation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-minimal.txt
+          pip install -r requirements-dev.txt
+
+      - name: Repository audit
+        run: python scripts/audit_repo.py
+
+      - name: Compile
+        run: python -m compileall -q src scripts tests
+
+      - name: Ruff
+        run: python -m ruff check src scripts tests
+
+      - name: Mypy
+        run: python -m mypy src
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Patch whitespace gate
+        run: git diff --check
