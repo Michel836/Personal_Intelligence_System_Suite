@@ -4,6 +4,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import json
+import os
 from functools import lru_cache
 from cachetools import LRUCache
 import threading
@@ -79,35 +80,39 @@ class SemanticSearchEngine:
             logger.error("Failed to generate query embedding")
             return []
         
-        # Get all documents with content
-        documents = self._get_documents_with_content(params.limit * 5)  # Get more candidates
+        # Whole-corpus retrieval (no limit*N preselection).
+        documents = self._get_documents_with_content()
         if not documents:
             logger.info("No documents with extracted content found")
             return []
-        
-        # Generate embeddings for documents (if not cached)
+
+        # Resolve embeddings: reuse the cache, batch-embed the remainder.
         doc_embeddings = []
         valid_docs = []
-        
+        pending_docs = []
+        pending_texts = []
         for doc in documents:
-            doc_id = doc['id']
-            content = doc.get('content_text', '')
-            
-            if not content.strip():
+            content = (doc.get('content_text') or '').strip()
+            if not content:
                 continue
-            
-            # Try to get cached embedding
-            embedding = self._get_cached_embedding(doc_id)
-            
-            if embedding is None:
-                # Generate new embedding
-                embedding = self.embedding_gen.generate_embedding(content)
-                if embedding is not None:
-                    self._cache_embedding(doc_id, embedding)
-            
+            embedding = self._get_cached_embedding(doc['id'])
             if embedding is not None:
                 doc_embeddings.append(embedding)
                 valid_docs.append(doc)
+            else:
+                pending_docs.append(doc)
+                pending_texts.append(content)
+
+        if pending_texts:
+            batch_size = int(os.environ.get("PIS_EMBEDDING_BATCH_SIZE", "32"))
+            new_embeddings = self.embedding_gen.generate_batch_embeddings(
+                pending_texts, batch_size=batch_size, show_progress=False
+            )
+            for doc, embedding in zip(pending_docs, new_embeddings):
+                if embedding is not None:
+                    self._cache_embedding(doc['id'], embedding)
+                    doc_embeddings.append(embedding)
+                    valid_docs.append(doc)
         
         if not doc_embeddings:
             logger.info("No valid document embeddings found")
@@ -294,18 +299,24 @@ class SemanticSearchEngine:
         
         return results
     
-    def _get_documents_with_content(self, limit: int = 1000) -> List[Dict[str, Any]]:
-        """Get documents that have extracted content."""
+    def _get_documents_with_content(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get documents that have extracted content.
+
+        ``limit=None`` returns the whole corpus (used by semantic search); an
+        explicit limit is still available for bounded callers.
+        """
+        sql = """
+            SELECT * FROM files
+            WHERE content_extracted = 1
+            AND content_text IS NOT NULL
+            AND length(content_text) > 50
+            ORDER BY priority DESC, modified_at DESC
+        """
         with self.db.get_connection() as conn:
-            cursor = conn.execute("""
-                SELECT * FROM files
-                WHERE content_extracted = 1 
-                AND content_text IS NOT NULL 
-                AND length(content_text) > 50
-                ORDER BY priority DESC, modified_at DESC
-                LIMIT ?
-            """, (limit,))
-            
+            if limit is None:
+                cursor = conn.execute(sql)
+            else:
+                cursor = conn.execute(sql + " LIMIT ?", (int(limit),))
             return [dict(row) for row in cursor]
     
     def _get_document_by_id(self, doc_id: int) -> Optional[Dict[str, Any]]:
