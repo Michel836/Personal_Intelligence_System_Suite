@@ -123,10 +123,20 @@ def semantic_search(query: str, limit: int = 10) -> list[dict[str, Any]]:
 
         engine = SemanticSearchEngine()
         if engine.is_available():
-            return [_public_row(r) for r in engine.semantic_search(query, limit=limit)]
+            model_key = getattr(engine.embedding_gen, "model_key", None)
+            dim = getattr(engine.embedding_gen, "embedding_dim", None)
+            rows = [_public_row(r) for r in engine.semantic_search(query, limit=limit)]
+            for row in rows:
+                row["embedding_model"] = model_key
+                row["embedding_dim"] = dim
+            return rows
     except Exception as exc:  # noqa: BLE001 - degrade to FTS
         logger.warning(f"semantic_search unavailable, falling back to FTS: {exc}")
-    return search_files(query=query, limit=limit)
+    rows = search_files(query=query, limit=limit)
+    for row in rows:
+        row["embedding_model"] = None
+        row["embedding_dim"] = None
+    return rows
 
 
 def build_server():
