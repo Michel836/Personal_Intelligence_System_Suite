@@ -44,6 +44,7 @@ class _FakeEmbeddings:
 
 def test_relevant_doc_outside_old_cap_is_found(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ss, "EmbeddingGenerator", _FakeEmbeddings)
+    monkeypatch.setenv("PIS_EMBEDDING_STORE_DIR", str(tmp_path / "store1"))
 
     docs = []
     for i in range(30):
@@ -62,6 +63,7 @@ def test_relevant_doc_outside_old_cap_is_found(tmp_path, monkeypatch) -> None:
 
 def test_loader_returns_whole_corpus(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ss, "EmbeddingGenerator", _FakeEmbeddings)
+    monkeypatch.setenv("PIS_EMBEDDING_STORE_DIR", str(tmp_path / "store2"))
     db = DatabaseManager(tmp_path / "sem2.db")
     engine = ss.SemanticSearchEngine(db)
     # _get_documents_with_content(limit=None) must not be capped by the loader.

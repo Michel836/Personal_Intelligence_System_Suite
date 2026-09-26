@@ -29,9 +29,60 @@ class SemanticSearchEngine:
         # Query cache for search results (max 1000 queries ~ 100MB)
         self.query_cache = LRUCache(maxsize=1000)
         self.query_cache_lock = threading.Lock()
-        
+
+        # Persistent pre-normalized embedding matrix (M009I.1).
+        self._store = None
+
         logger.info(f"SemanticSearchEngine initialized. Embeddings available: {self.embedding_gen.is_available()}")
-    
+
+    def _get_store(self):
+        """Return the persistent matrix store for the active embedding model."""
+        from .embedding_store import EmbeddingMatrixStore
+
+        key = getattr(self.embedding_gen, "model_key", type(self.embedding_gen).__name__)
+        name = getattr(self.embedding_gen, "model_name", key)
+        dim = int(getattr(self.embedding_gen, "embedding_dim", 0) or 0)
+        base = os.environ.get("PIS_EMBEDDING_STORE_DIR")
+        if self._store is None or self._store.model_key != key or self._store.dim != dim:
+            self._store = EmbeddingMatrixStore(
+                key, name, dim, base_dir=Path(base) if base else None
+            )
+        return self._store
+
+    def _embed_texts(self, texts):
+        if not texts:
+            return []
+        batch_size = int(os.environ.get("PIS_EMBEDDING_BATCH_SIZE", "32"))
+        return self.embedding_gen.generate_batch_embeddings(
+            texts, batch_size=batch_size, show_progress=False
+        )
+
+    def _refresh_store(self, store, documents):
+        """Ensure the store covers the current corpus (rebuild or append)."""
+        valid = []
+        id_map = {}
+        for doc in documents:
+            content = (doc.get("content_text") or "").strip()
+            if content:
+                doc_id = int(doc["id"])
+                valid.append((doc_id, content))
+                id_map[doc_id] = doc
+        loaded = store.load()
+        existing = set(store.meta.ids) if (loaded and store.meta) else set()
+        if not loaded:
+            embeddings = self._embed_texts([t for _, t in valid])
+            pairs = [(i, e) for (i, _), e in zip(valid, embeddings) if e is not None]
+            if pairs:
+                store.save([i for i, _ in pairs], np.vstack([e for _, e in pairs]))
+        else:
+            missing = [(i, t) for i, t in valid if i not in existing]
+            if missing:
+                embeddings = self._embed_texts([t for _, t in missing])
+                pairs = [(i, e) for (i, _), e in zip(missing, embeddings) if e is not None]
+                if pairs:
+                    store.append([i for i, _ in pairs], np.vstack([e for _, e in pairs]))
+        return id_map
+
     def is_available(self) -> bool:
         """Check if semantic search is available."""
         return self.embedding_gen.is_available()
@@ -80,56 +131,24 @@ class SemanticSearchEngine:
             logger.error("Failed to generate query embedding")
             return []
         
-        # Whole-corpus retrieval (no limit*N preselection).
+        # Whole-corpus retrieval over the persistent pre-normalized matrix.
         documents = self._get_documents_with_content()
         if not documents:
             logger.info("No documents with extracted content found")
             return []
 
-        # Resolve embeddings: reuse the cache, batch-embed the remainder.
-        doc_embeddings = []
-        valid_docs = []
-        pending_docs = []
-        pending_texts = []
-        for doc in documents:
-            content = (doc.get('content_text') or '').strip()
-            if not content:
-                continue
-            embedding = self._get_cached_embedding(doc['id'])
-            if embedding is not None:
-                doc_embeddings.append(embedding)
-                valid_docs.append(doc)
-            else:
-                pending_docs.append(doc)
-                pending_texts.append(content)
-
-        if pending_texts:
-            batch_size = int(os.environ.get("PIS_EMBEDDING_BATCH_SIZE", "32"))
-            new_embeddings = self.embedding_gen.generate_batch_embeddings(
-                pending_texts, batch_size=batch_size, show_progress=False
-            )
-            for doc, embedding in zip(pending_docs, new_embeddings):
-                if embedding is not None:
-                    self._cache_embedding(doc['id'], embedding)
-                    doc_embeddings.append(embedding)
-                    valid_docs.append(doc)
-        
-        if not doc_embeddings:
+        store = self._get_store()
+        id_map = self._refresh_store(store, documents)
+        if store.matrix is None:
             logger.info("No valid document embeddings found")
             return []
-        
-        # Find similar documents
-        similar_indices = self.embedding_gen.find_similar(
-            query_embedding, 
-            doc_embeddings, 
-            top_k=params.limit
-        )
-        
-        # Prepare results
+
+        ranked = store.search(query_embedding, top_k=params.limit)
+
         results = []
-        for idx, similarity in similar_indices:
-            if similarity >= params.similarity_threshold:
-                doc = valid_docs[idx].copy()
+        for doc_id, similarity in ranked:
+            if similarity >= params.similarity_threshold and doc_id in id_map:
+                doc = id_map[doc_id].copy()
                 doc['semantic_similarity'] = similarity
                 doc['search_type'] = 'semantic'
                 results.append(doc)
