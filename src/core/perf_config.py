@@ -79,7 +79,7 @@ class HardwareProfile:
         """
         return {
             "scan_workers": 1,
-            "extract_workers": 2,
+            "extract_workers": 1,
             "ocr_workers": 8,
             "archive_workers": 1,
             "db_batch_size": 1000,

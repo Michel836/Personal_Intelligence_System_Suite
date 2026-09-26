@@ -35,7 +35,7 @@ def extract_content():
     
     # Initialize components
     db = DatabaseManager()
-    extractor = ExtractionManager(max_workers=2)
+    extractor = ExtractionManager(max_workers=1)
     
     # Get database stats
     db_stats = db.get_statistics()

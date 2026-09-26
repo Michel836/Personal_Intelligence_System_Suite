@@ -16,7 +16,7 @@ from .text_extractor import TextExtractor
 class ExtractionManager:
     """Manages content extraction from multiple file types."""
     
-    def __init__(self, max_workers: int = 2):
+    def __init__(self, max_workers: int = 1):
         self.extractors: List[BaseExtractor] = [
             PDFExtractor(),
             OfficeExtractor(),
