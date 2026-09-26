@@ -50,11 +50,23 @@ class FastScannerEngine:
         
         # System directories to skip
         # Matched as whole path components (see _should_skip_directory), never
-        # as substrings, so directories like ~/recovery_notes stay indexed.
+        # as substrings, so directories like ~/recovery_notes or
+        # "project-recovery-tool" stay indexed.
         self._skip_dirs = {
+            # OS system directories
             'windows', 'program files', 'program files (x86)',
             'programdata', '$recycle.bin', 'system volume information',
-            'windows.old', 'recovery'
+            'windows.old', 'recovery',
+            # VCS / virtualenv / build / cache directories (not source content)
+            '.git', '.hg', '.svn',
+            '.venv', 'venv', 'env',
+            'node_modules',
+            '__pycache__',
+            '.pytest_cache', '.mypy_cache', '.ruff_cache',
+            '.tox', '.nox',
+            'dist', 'build',
+            'coverage', '.coverage',
+            '.cache',
         }
     
     def fast_scan(
