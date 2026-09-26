@@ -65,7 +65,10 @@ class DatabaseManager:
     """SQLite database manager for file indexing."""
     
     def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = db_path or Path("data/indexes/files.db")
+        # ``PIS_DB_PATH`` lets tests/acceptance point the application at a
+        # temporary database without touching the default repo index.
+        default_path = os.environ.get("PIS_DB_PATH") or "data/indexes/files.db"
+        self.db_path = Path(db_path) if db_path is not None else Path(default_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # SQLite owns the WAL/SHM lifecycle. The harness must never unlink
