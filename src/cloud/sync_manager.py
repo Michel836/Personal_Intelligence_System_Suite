@@ -555,7 +555,11 @@ class CloudSyncManager:
                     continue
                 
                 if table_name == "files":
-                    # Handle files carefully - don't overwrite content
+                    # Non-scan persistence exception: this restores a previously
+                    # indexed snapshot and deliberately preserves row ids/content.
+                    # Restored rows default to state='ACTIVE' with no
+                    # volume_id/last_seen_scan_id, so they are searchable but are
+                    # never touched by scan reconciliation.
                     for record in records:
                         cursor.execute("""
                             INSERT OR IGNORE INTO files 
