@@ -12,6 +12,7 @@ import time
 
 from loguru import logger
 from ..scanner.models import EXTRACTION_LIMIT, FileInfo, FileType, Priority
+from .volume import VolumeInfo, normalize_root, resolve_volume, roots_overlap
 
 
 # --- Lexical search (FTS5) -------------------------------------------------
@@ -134,6 +135,9 @@ class DatabaseManager:
             # Full-text search table + canonical synchronisation triggers
             self._ensure_fts(conn)
 
+            # Volume / scan-run / lifecycle state
+            self._ensure_lifecycle(conn)
+
             # Stats table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scan_stats (
@@ -208,6 +212,256 @@ class DatabaseManager:
             )
             logger.info("Rebuilt FTS index for existing database")
 
+    # --- Volume / scan-run lifecycle -------------------------------------
+    #
+    # Invariants enforced here:
+    #  * absence of a path during an incomplete/failed/cancelled scan is NOT
+    #    proof of deletion (reconciliation only runs on COMPLETED runs);
+    #  * a missing/unavailable volume never causes reconciliation;
+    #  * lifecycle changes are reversible (rows are never physically deleted);
+    #    files transition ACTIVE <-> MISSING.
+    def _ensure_lifecycle(self, conn) -> None:
+        """Create lifecycle tables/columns, preserving all existing rows."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS volumes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stable_key TEXT UNIQUE NOT NULL,
+                device TEXT,
+                fs_uuid TEXT,
+                fs_type TEXT,
+                mountpoint TEXT,
+                display_name TEXT,
+                is_available INTEGER DEFAULT 0,
+                first_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scan_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                volume_id INTEGER,
+                root_path TEXT NOT NULL,
+                started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'RUNNING',
+                files_seen INTEGER DEFAULT 0,
+                files_upserted INTEGER DEFAULT 0,
+                files_errors INTEGER DEFAULT 0,
+                error_message TEXT
+            )
+        """)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(files)")}
+        columns = {
+            "volume_id": "INTEGER",
+            "last_seen_scan_id": "INTEGER",
+            "state": "TEXT DEFAULT 'ACTIVE'",
+            "device_id": "INTEGER",
+            "inode": "INTEGER",
+        }
+        for name, decl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE files ADD COLUMN {name} {decl}")
+                logger.info(f"Added files.{name} for lifecycle tracking")
+        conn.execute("UPDATE files SET state = 'ACTIVE' WHERE state IS NULL OR state = ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_volume ON files(volume_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_state ON files(state)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_last_seen ON files(last_seen_scan_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_files_identity ON files(volume_id, device_id, inode)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_scan_runs_volume ON scan_runs(volume_id)")
+
+    def _upsert_volume(self, conn, volume: VolumeInfo) -> int:
+        conn.execute("""
+            INSERT INTO volumes (stable_key, device, fs_uuid, fs_type, mountpoint,
+                                 display_name, is_available, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(stable_key) DO UPDATE SET
+                device = excluded.device,
+                fs_uuid = excluded.fs_uuid,
+                fs_type = excluded.fs_type,
+                mountpoint = excluded.mountpoint,
+                display_name = excluded.display_name,
+                is_available = excluded.is_available,
+                last_seen_at = CURRENT_TIMESTAMP
+        """, (
+            volume.stable_key, volume.device, volume.fs_uuid, volume.fs_type,
+            volume.mountpoint, volume.display_name or volume.mountpoint,
+            1 if volume.is_available else 0,
+        ))
+        row = conn.execute(
+            "SELECT id FROM volumes WHERE stable_key = ?", (volume.stable_key,)
+        ).fetchone()
+        return int(row[0])
+
+    @staticmethod
+    def _run_row(conn, run_id: int):
+        return conn.execute("SELECT * FROM scan_runs WHERE id = ?", (run_id,)).fetchone()
+
+    @staticmethod
+    def _volume_row(conn, volume_id: int):
+        return conn.execute("SELECT * FROM volumes WHERE id = ?", (volume_id,)).fetchone()
+
+    def begin_scan(self, root_path, *, volume: Optional[VolumeInfo] = None) -> dict:
+        """Start a RUNNING scan run for a normalized root/volume.
+
+        Raises ``ValueError`` when another RUNNING run on the same volume has an
+        overlapping root scope.
+        """
+        root = normalize_root(root_path)
+        resolved = volume or resolve_volume(root)
+        with self.get_connection() as conn:
+            volume_id = self._upsert_volume(conn, resolved)
+            for row in conn.execute(
+                "SELECT id, volume_id, root_path FROM scan_runs WHERE status = 'RUNNING'"
+            ).fetchall():
+                if row["volume_id"] == volume_id and roots_overlap(root, row["root_path"]):
+                    raise ValueError(
+                        f"overlapping RUNNING scan: run {row['id']} already covers {row['root_path']}"
+                    )
+            cursor = conn.execute(
+                "INSERT INTO scan_runs (volume_id, root_path, started_at, status) "
+                "VALUES (?, ?, CURRENT_TIMESTAMP, 'RUNNING')",
+                (volume_id, root),
+            )
+            run_id = int(cursor.lastrowid)
+            conn.commit()
+        return {"run_id": run_id, "volume_id": volume_id, "root_path": root, "volume": resolved}
+
+    def record_scan_files(self, run_id: int, files: List[FileInfo]) -> int:
+        """Upsert files under a run, stamping volume / last_seen / ACTIVE."""
+        with self.get_connection() as conn:
+            run = self._run_row(conn, run_id)
+            if run is None:
+                raise ValueError(f"unknown scan run {run_id}")
+            if run["status"] != "RUNNING":
+                raise ValueError(f"scan run {run_id} is {run['status']}, not RUNNING")
+            volume_id = int(run["volume_id"])
+        upserted = self.save_files_batch(files, volume_id=volume_id, scan_id=run_id)
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE scan_runs SET files_seen = files_seen + ?, "
+                "files_upserted = files_upserted + ? WHERE id = ?",
+                (len(files), upserted, run_id),
+            )
+            conn.commit()
+        return upserted
+
+    def _finish_run(self, run_id: int, status: str, *, error_message: Optional[str] = None) -> None:
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE scan_runs SET status = ?, finished_at = CURRENT_TIMESTAMP, "
+                "error_message = ? WHERE id = ?",
+                (status, error_message, run_id),
+            )
+            conn.commit()
+
+    def fail_scan(self, run_id: int, error_message: Optional[str] = None) -> None:
+        """Mark a run FAILED. Never reconciles."""
+        self._finish_run(run_id, "FAILED", error_message=error_message)
+
+    def cancel_scan(self, run_id: int) -> None:
+        """Mark a run CANCELLED. Never reconciles."""
+        self._finish_run(run_id, "CANCELLED")
+
+    def complete_scan(self, run_id: int) -> dict:
+        """Mark a run COMPLETED and reconcile its scope (rename + MISSING).
+
+        Reconciliation only happens for a RUNNING run whose volume is currently
+        available; otherwise a ValueError is raised and nothing changes.
+        """
+        with self.get_connection() as conn:
+            run = self._run_row(conn, run_id)
+            if run is None:
+                raise ValueError(f"unknown scan run {run_id}")
+            if run["status"] != "RUNNING":
+                raise ValueError(f"scan run {run_id} is {run['status']}, not RUNNING")
+            volume = self._volume_row(conn, int(run["volume_id"]))
+            if volume is None or not volume["is_available"]:
+                raise ValueError("refusing to reconcile: volume is not available")
+
+        self._finish_run(run_id, "COMPLETED")
+        with self.get_connection() as conn:
+            renamed = self._associate_renames(conn, run_id)
+            missing = self._mark_missing(conn, run_id)
+            conn.commit()
+        return {"run_id": run_id, "renamed": renamed, "missing": missing}
+
+    @staticmethod
+    def _like_scope(root: str) -> str:
+        escaped = root.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return escaped.rstrip(os.sep) + os.sep + "%"
+
+    @classmethod
+    def _scope_clause(cls, column: str) -> str:
+        return f"({column} = ? OR {column} LIKE ? ESCAPE '\\')"
+
+    def _mark_missing(self, conn, run_id: int) -> int:
+        run = self._run_row(conn, run_id)
+        root = run["root_path"]
+        cursor = conn.execute(
+            f"""UPDATE files SET state = 'MISSING'
+                WHERE volume_id = ?
+                  AND state = 'ACTIVE'
+                  AND (last_seen_scan_id IS NULL OR last_seen_scan_id != ?)
+                  AND {self._scope_clause('path')}""",
+            (run["volume_id"], run_id, root, self._like_scope(root)),
+        )
+        return int(cursor.rowcount)
+
+    def _associate_renames(self, conn, run_id: int) -> int:
+        run = self._run_row(conn, run_id)
+        root = run["root_path"]
+        like = self._like_scope(root)
+        rows = conn.execute(
+            f"""SELECT old.id AS old_id, new.id AS new_id, new.path AS new_path
+                FROM files AS old
+                JOIN files AS new
+                  ON new.volume_id = old.volume_id
+                 AND new.device_id = old.device_id
+                 AND new.inode = old.inode
+                 AND new.size_bytes = old.size_bytes
+                 AND new.last_seen_scan_id = ?
+                 AND new.state = 'ACTIVE'
+                 AND new.id != old.id
+                WHERE old.volume_id = ?
+                  AND old.state = 'ACTIVE'
+                  AND (old.last_seen_scan_id IS NULL OR old.last_seen_scan_id != ?)
+                  AND old.device_id IS NOT NULL
+                  AND old.inode IS NOT NULL
+                  AND {self._scope_clause('old.path')}
+                  AND {self._scope_clause('new.path')}""",
+            (run_id, run["volume_id"], run_id, root, like, root, like),
+        ).fetchall()
+        if not rows:
+            return 0
+        old_counts: dict[int, int] = {}
+        new_counts: dict[int, int] = {}
+        for row in rows:
+            old_counts[row["old_id"]] = old_counts.get(row["old_id"], 0) + 1
+            new_counts[row["new_id"]] = new_counts.get(row["new_id"], 0) + 1
+        applied = 0
+        for row in rows:
+            if old_counts[row["old_id"]] != 1 or new_counts[row["new_id"]] != 1:
+                continue
+            new_path = row["new_path"]
+            # Remove the freshly-inserted duplicate first (path is UNIQUE), then
+            # rewrite the surviving row onto the new path so row id and any
+            # extracted content/checksum are preserved.
+            conn.execute("DELETE FROM files WHERE id = ?", (row["new_id"],))
+            conn.execute(
+                """UPDATE files SET
+                       path = ?, filename = ?, extension = ?, parent_dir = ?,
+                       depth = ?, last_seen_scan_id = ?, state = 'ACTIVE',
+                       indexed_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (
+                    new_path, os.path.basename(new_path),
+                    os.path.splitext(new_path)[1].lower(), os.path.dirname(new_path),
+                    new_path.count(os.sep), run_id, row["old_id"],
+                ),
+            )
+            applied += 1
+        return applied
+
     @contextmanager
     def get_connection(self, timeout=30.0, max_retries=3):
         """Get database connection with timeout and retry logic."""
@@ -247,19 +501,23 @@ class DatabaseManager:
     # volume-disconnected) scan is NOT proof of deletion. Deletion/rename/move
     # reconciliation is intentionally not implemented here and belongs to a
     # later mission with volume identity and completed scan-run boundaries.
-    def save_file(self, file_info: FileInfo) -> int:
+    def save_file(self, file_info: FileInfo, *, volume_id: Optional[int] = None,
+                  scan_id: Optional[int] = None) -> int:
         """Insert or refresh a file's scan metadata, returning its row id.
 
         Existing extracted content (``content_text``/``content_extracted``) is
-        preserved; only scanner-owned metadata is refreshed.
+        preserved; only scanner-owned metadata is refreshed. When ``scan_id`` is
+        supplied the row is stamped with ``volume_id``/``last_seen_scan_id`` and
+        ``state='ACTIVE'`` (a completed scan run may later reconcile it).
         """
         with self.get_connection() as conn:
             cursor = conn.execute("""
                 INSERT INTO files (
                     path, filename, extension, size_bytes, file_type,
                     priority, created_at, modified_at, metadata,
-                    parent_dir, depth, checksum, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    parent_dir, depth, checksum,
+                    volume_id, last_seen_scan_id, state, device_id, inode, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(path) DO UPDATE SET
                     filename = excluded.filename,
                     extension = excluded.extension,
@@ -272,6 +530,11 @@ class DatabaseManager:
                     parent_dir = excluded.parent_dir,
                     depth = excluded.depth,
                     checksum = COALESCE(excluded.checksum, files.checksum),
+                    volume_id = COALESCE(excluded.volume_id, files.volume_id),
+                    last_seen_scan_id = COALESCE(excluded.last_seen_scan_id, files.last_seen_scan_id),
+                    state = CASE WHEN excluded.last_seen_scan_id IS NOT NULL THEN 'ACTIVE' ELSE files.state END,
+                    device_id = COALESCE(excluded.device_id, files.device_id),
+                    inode = COALESCE(excluded.inode, files.inode),
                     indexed_at = CURRENT_TIMESTAMP
             """, (
                 str(file_info.path),
@@ -286,6 +549,11 @@ class DatabaseManager:
                 str(file_info.path.parent),
                 len(file_info.path.parts) - 1,
                 file_info.checksum or None,
+                volume_id,
+                scan_id,
+                "ACTIVE",
+                file_info.device_id,
+                file_info.inode,
             ))
             conn.commit()
             row = conn.execute(
@@ -293,7 +561,9 @@ class DatabaseManager:
             ).fetchone()
             return int(row[0]) if row else int(cursor.lastrowid)
     
-    def save_files_batch(self, files: List[FileInfo], batch_size: int = 1000) -> int:
+    def save_files_batch(self, files: List[FileInfo], batch_size: int = 1000, *,
+                         volume_id: Optional[int] = None,
+                         scan_id: Optional[int] = None) -> int:
         """Insert or refresh metadata for many files.
 
         Uses the same UPSERT contract as :meth:`save_file` (preserving extracted
@@ -324,6 +594,11 @@ class DatabaseManager:
                         str(f.path.parent),
                         len(f.path.parts) - 1,
                         f.checksum or None,
+                        volume_id,
+                        scan_id,
+                        "ACTIVE",
+                        f.device_id,
+                        f.inode,
                     )
                     for f in batch
                 ]
@@ -332,8 +607,9 @@ class DatabaseManager:
                     INSERT INTO files (
                         path, filename, extension, size_bytes, file_type,
                         priority, created_at, modified_at, metadata,
-                        parent_dir, depth, checksum, indexed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        parent_dir, depth, checksum,
+                        volume_id, last_seen_scan_id, state, device_id, inode, indexed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                     ON CONFLICT(path) DO UPDATE SET
                         filename = excluded.filename,
                         extension = excluded.extension,
@@ -346,6 +622,11 @@ class DatabaseManager:
                         parent_dir = excluded.parent_dir,
                         depth = excluded.depth,
                         checksum = COALESCE(excluded.checksum, files.checksum),
+                        volume_id = COALESCE(excluded.volume_id, files.volume_id),
+                        last_seen_scan_id = COALESCE(excluded.last_seen_scan_id, files.last_seen_scan_id),
+                        state = CASE WHEN excluded.last_seen_scan_id IS NOT NULL THEN 'ACTIVE' ELSE files.state END,
+                        device_id = COALESCE(excluded.device_id, files.device_id),
+                        inode = COALESCE(excluded.inode, files.inode),
                         indexed_at = CURRENT_TIMESTAMP
                 """, data)
 
@@ -464,7 +745,8 @@ class DatabaseManager:
         extension: Optional[str] = None,
         min_size: Optional[int] = None,
         max_size: Optional[int] = None,
-        limit: int = 100
+        limit: int = 100,
+        include_missing: bool = False,
     ) -> List[Dict[str, Any]]:
         """Search files by lexical text plus metadata filters.
 
@@ -477,6 +759,8 @@ class DatabaseManager:
         conditions, params = self._build_filter_conditions(
             file_type, priority, extension, min_size, max_size
         )
+        if not include_missing:
+            conditions.append("COALESCE(files.state, 'ACTIVE') = 'ACTIVE'")
 
         with self.get_connection() as conn:
             if not (query and query.strip()):

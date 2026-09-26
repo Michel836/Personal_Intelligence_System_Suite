@@ -246,6 +246,8 @@ class ScannerEngine:
                 modified_at=datetime.fromtimestamp(stat_info.st_mtime),
                 accessed_at=datetime.fromtimestamp(stat_info.st_atime),
                 extension=file_path.suffix.lower(),
+                device_id=stat_info.st_dev,
+                inode=stat_info.st_ino,
             )
             
             # MIME type detection

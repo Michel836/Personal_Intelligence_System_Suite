@@ -52,6 +52,10 @@ class FileInfo(BaseModel):
     created_at: Optional[datetime] = None
     modified_at: datetime
     accessed_at: Optional[datetime] = None
+
+    # Filesystem identity (for rename/move association within a volume)
+    device_id: Optional[int] = None
+    inode: Optional[int] = None
     
     # File characteristics
     extension: str
@@ -88,6 +92,13 @@ class FileInfo(BaseModel):
     def age_days(self) -> int:
         """File age in days."""
         return (datetime.now() - self.modified_at).days
+
+    @property
+    def identity_key(self) -> Optional[tuple[int, int]]:
+        """``(device_id, inode)`` when both are known, else ``None``."""
+        if self.device_id is None or self.inode is None:
+            return None
+        return (self.device_id, self.inode)
 
 
 class ScanProgress(BaseModel):

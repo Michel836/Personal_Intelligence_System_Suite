@@ -202,6 +202,8 @@ class FastScannerEngine:
                 created_at=stat_created_at(stat_result),
                 modified_at=datetime.fromtimestamp(stat_result.st_mtime),
                 extension=file_path.suffix.lower(),
+                device_id=stat_result.st_dev,
+                inode=stat_result.st_ino,
                 file_type=self._classify_file_type_fast(file_path.suffix.lower()),
                 priority=self._determine_priority_fast(file_path),
                 # Skip expensive operations:

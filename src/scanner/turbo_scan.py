@@ -51,6 +51,8 @@ class TurboScanner:
                                 'size_bytes': stat_info.st_size,
                                 'modified_at': datetime.fromtimestamp(stat_info.st_mtime),
                                 'created_at': stat_created_at(stat_info),
+                                'device_id': stat_info.st_dev,
+                                'inode': stat_info.st_ino,
                             }
                             
                             # Add to queue
@@ -110,6 +112,8 @@ class TurboScanner:
                     size_bytes=entry['size_bytes'],
                     created_at=entry['created_at'],
                     modified_at=entry['modified_at'],
+                    device_id=entry.get('device_id'),
+                    inode=entry.get('inode'),
                     file_type=FileType(self.get_file_type(ext)),
                 ))
 
