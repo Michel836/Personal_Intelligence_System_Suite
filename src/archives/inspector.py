@@ -872,11 +872,3 @@ def _terminate(proc: subprocess.Popen) -> None:
         proc.wait(timeout=5)
     except Exception:  # noqa: BLE001
         pass
-
-
-def _call_flag(obj, name: str) -> bool:
-    try:
-        attr = getattr(obj, name)
-        return bool(attr() if callable(attr) else attr)
-    except Exception:  # noqa: BLE001
-        return False

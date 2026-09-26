@@ -1,0 +1,13 @@
+# Optional archive backends (M009J.2).
+#
+# ZIP, TAR, TAR.GZ/TGZ, TAR.BZ2 and (via the 7z CLI) TAR.XZ use only the Python
+# standard library. The packages below enable the additional 7z and RAR
+# backends; archive support degrades to BACKEND_UNAVAILABLE when they (or their
+# host tools) are missing, and never blocks application startup.
+#
+# Host tools optionally used when present:
+#   7z / 7zz / 7za   -> 7z backend fallback (also used for .tar.xz when the
+#                        interpreter lacks the _lzma module)
+#   unrar / unar / bsdtar / 7z -> backend for rarfile
+py7zr>=1.0      # 7z backend (needs a Python built with liblzma / _lzma)
+rarfile>=4.0    # RAR listing/extraction via a local unrar/unar/bsdtar/7z tool
