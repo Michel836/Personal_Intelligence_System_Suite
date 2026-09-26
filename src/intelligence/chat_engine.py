@@ -133,6 +133,7 @@ Guidelines:
             conversation_context = self._build_context(user_message, context_documents)
             
             # Generate AI response with timeout
+            from ..core.ai_config import llm_think
             response = ollama.chat(
                 model=self.model_name,
                 messages=[
@@ -140,6 +141,7 @@ Guidelines:
                     *self.conversation_history,
                     {"role": "user", "content": conversation_context}
                 ],
+                think=llm_think(),
                 options={
                     "temperature": 0.7,
                     "top_p": 0.9,

@@ -28,17 +28,35 @@ from src.intelligence.embeddings import EmbeddingGenerator, resolve_model_key
 _TOKEN_RE = re.compile(r"[A-Za-zÀ-ÿ]{8,}")
 
 
+def _chunk(text: str, size: int = 800, overlap: int = 100):
+    text = " ".join((text or "").split())
+    if len(text) <= size:
+        return [text] if len(text) >= 80 else []
+    chunks = []
+    step = max(1, size - overlap)
+    for start in range(0, len(text), step):
+        piece = text[start:start + size]
+        if len(piece) >= 80:
+            chunks.append(piece)
+    return chunks
+
+
 def _load_documents(db_path: str, max_docs: int):
+    """Return (chunk_id, chunk_text) pairs, chunking long documents."""
     db = DatabaseManager(db_path)
     with db.get_connection() as conn:
         rows = conn.execute(
             """SELECT id, content_text FROM files
                WHERE content_extracted = 1 AND content_text IS NOT NULL
-                 AND length(content_text) BETWEEN 80 AND 4000
+                 AND length(content_text) > 80
                ORDER BY id LIMIT ?""",
             (max_docs,),
         ).fetchall()
-    return [(int(r["id"]), r["content_text"]) for r in rows]
+    docs = []
+    for r in rows:
+        for k, chunk in enumerate(_chunk(r["content_text"])):
+            docs.append((int(r["id"]) * 1000 + k, chunk))
+    return docs
 
 
 def _build_queries(docs, max_queries: int):
@@ -47,14 +65,16 @@ def _build_queries(docs, max_queries: int):
     for doc_id, text in docs:
         for token in set(_TOKEN_RE.findall(text.lower())):
             token_to_docs.setdefault(token, set()).add(doc_id)
-    # keep terms that match a small, non-trivial set of documents
-    queries = [
-        (token, ids)
-        for token, ids in token_to_docs.items()
-        if 1 <= len(ids) <= max(2, len(docs) // 10)
-    ]
-    queries.sort()
-    return queries[:max_queries]
+    # Discriminative protocol: prefer terms unique to a single chunk so the
+    # ground-truth set is small (term -> its source chunk). This measures
+    # whether a model retrieves the chunk a term actually came from.
+    unique = [(t, ids) for t, ids in token_to_docs.items() if len(ids) == 1]
+    if len(unique) >= max_queries:
+        unique.sort()
+        return unique[:max_queries]
+    fallback = [(t, ids) for t, ids in token_to_docs.items() if len(ids) <= 2]
+    fallback.sort(key=lambda x: (len(x[1]), x[0]))
+    return fallback[:max_queries]
 
 
 def _evaluate(model_key: str, docs, queries, db_path: str) -> dict:
@@ -65,7 +85,9 @@ def _evaluate(model_key: str, docs, queries, db_path: str) -> dict:
     if not gen.is_available():
         return {"model": model_key, "error": "unavailable"}
 
-    texts = [t for _, t in docs]
+    # E5 models require asymmetric prefixes.
+    is_e5 = "e5" in model_key.lower()
+    texts = [("passage: " + t) if is_e5 else t for _, t in docs]
     t0 = time.perf_counter()
     doc_emb = gen.generate_batch_embeddings(texts, batch_size=64, show_progress=False)
     embed_s = time.perf_counter() - t0
@@ -78,7 +100,7 @@ def _evaluate(model_key: str, docs, queries, db_path: str) -> dict:
     recalls_5, recalls_10, rrs = [], [], []
     t0 = time.perf_counter()
     for token, relevant in queries:
-        q = gen.generate_embedding(token)
+        q = gen.generate_embedding(("query: " + token) if is_e5 else token)
         if q is None:
             continue
         ranked = gen.find_similar(q, doc_vecs, top_k=10)

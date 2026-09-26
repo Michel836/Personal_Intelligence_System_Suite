@@ -21,3 +21,12 @@ def model_for(role: str) -> str:
     """Resolve a model name for a role, or ``""`` if unknown."""
     env_name = f"PIS_MODEL_{role.upper()}"
     return os.environ.get(env_name) or DEFAULT_MODELS.get(role, "")
+
+
+def llm_think() -> bool:
+    """Whether reasoning-mode models should emit hidden thinking tokens.
+
+    Disabled by default: reasoning models (Qwen3.x) otherwise spend the whole
+    generation budget in the thinking channel and return an empty answer.
+    """
+    return os.environ.get("PIS_LLM_THINK", "false").strip().lower() in {"1", "true", "yes", "on"}
