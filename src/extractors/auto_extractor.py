@@ -16,8 +16,9 @@ from .enhanced_extractor import EnhancedExtractor
 class AutoExtractor:
     """Automatic content extraction system for large-scale processing."""
     
-    def __init__(self, db_path: str = "data/indexes/files.db", max_workers: int = 4):
-        self.db_path = db_path
+    def __init__(self, db_path=None, max_workers: int = 4):
+        from ..core.database import default_db_path
+        self.db_path = db_path or default_db_path()
         self.max_workers = max_workers
         
         # Initialize extraction manager with enhanced extractor

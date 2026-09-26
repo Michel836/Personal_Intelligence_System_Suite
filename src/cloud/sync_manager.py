@@ -31,8 +31,9 @@ except ImportError:
 class CloudSyncManager:
     """Manage cloud synchronization for database and settings."""
     
-    def __init__(self, db_path: str = "data/indexes/files.db", config_path: str = "data/cloud_config.json"):
-        self.db_path = db_path
+    def __init__(self, db_path=None, config_path: str = "data/cloud_config.json"):
+        from ..core.database import default_db_path
+        self.db_path = db_path or default_db_path()
         self.config_path = config_path
         self.config = self._load_config()
         self.sync_running = False

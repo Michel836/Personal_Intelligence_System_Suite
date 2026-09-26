@@ -38,8 +38,9 @@ except ImportError:
 class AdvancedVisualizations:
     """Advanced visualization system for document analytics."""
     
-    def __init__(self, db_path: str = "data/indexes/files.db"):
-        self.db_path = db_path
+    def __init__(self, db_path=None):
+        from ..core.database import default_db_path
+        self.db_path = db_path or default_db_path()
         self.color_schemes = {
             'primary': ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2'],
             'neon': ['#ff006e', '#8338ec', '#3a86ff', '#06ffa5', '#ffbe0b', '#fb5607'],

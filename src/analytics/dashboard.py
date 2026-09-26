@@ -34,8 +34,9 @@ class FileStats:
 class AnalyticsDashboard:
     """Analytics dashboard for file collection insights."""
     
-    def __init__(self, db_path: str = "data/indexes/files.db"):
-        self.db_path = db_path
+    def __init__(self, db_path=None):
+        from ..core.database import default_db_path
+        self.db_path = db_path or default_db_path()
         
     def get_connection(self) -> sqlite3.Connection:
         """Get database connection."""

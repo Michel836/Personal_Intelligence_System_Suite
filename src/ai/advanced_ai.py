@@ -21,8 +21,9 @@ except ImportError:
 class AdvancedAI:
     """Advanced AI system for document analysis and summaries."""
     
-    def __init__(self, db_path: str = "data/indexes/files.db", ollama_url: str = "http://localhost:11434"):
-        self.db_path = db_path
+    def __init__(self, db_path=None, ollama_url: str = "http://localhost:11434"):
+        from ..core.database import default_db_path
+        self.db_path = db_path or default_db_path()
         self.ollama_url = ollama_url
         self.model = "llama3.2:latest"
         self._init_ai_tables()

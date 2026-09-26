@@ -12,8 +12,9 @@ from loguru import logger
 class TagManager:
     """Manage tags and favorites for files."""
     
-    def __init__(self, db_path: str = "data/indexes/files.db"):
-        self.db_path = db_path
+    def __init__(self, db_path=None):
+        from ..core.database import default_db_path
+        self.db_path = db_path or default_db_path()
         self._init_tables()
     
     def _init_tables(self):
