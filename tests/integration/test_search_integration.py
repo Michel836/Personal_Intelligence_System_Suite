@@ -166,10 +166,8 @@ class TestScannerIntegration:
 
         assert len(files) > 0
         assert all(isinstance(file_info, FileInfo) for file_info in files)
-        assert all(
-            file_info.created_at is not None and file_info.modified_at is not None
-            for file_info in files
-        )
+        assert all(file_info.modified_at is not None for file_info in files)
+        # ``created_at`` is optional (Linux has no reliable birth time).
 
         # Persist the yielded metadata, then read it back.
         db.save_files_batch(files)

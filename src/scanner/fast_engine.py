@@ -9,7 +9,15 @@ from datetime import datetime
 import os
 
 from loguru import logger
-from .models import FileInfo, FileType, Priority, ScanProgress, ScanStats
+from .models import (
+    FileInfo,
+    FileType,
+    Priority,
+    ScanProgress,
+    ScanStats,
+    METADATA_INDEX_LIMIT,
+    stat_created_at,
+)
 
 
 class FastScannerEngine:
@@ -53,8 +61,24 @@ class FastScannerEngine:
         limit: Optional[int] = None,
         progress_callback: Optional[Callable] = None
     ) -> Iterator[FileInfo]:
-        """Ultra-fast single-pass scan."""
-        
+        """Ultra-fast single-pass scan.
+
+        Each call starts from a clean cancellation state so a previous
+        ``cancel()`` cannot permanently disable scanning.
+        """
+        self._reset_cancel()
+        yield from self._fast_scan(path, limit=limit, progress_callback=progress_callback)
+
+    def _reset_cancel(self) -> None:
+        """Clear the cancellation flag for a new scan invocation."""
+        self._cancelled = False
+
+    def _fast_scan(
+        self,
+        path: Path,
+        limit: Optional[int] = None,
+        progress_callback: Optional[Callable] = None
+    ) -> Iterator[FileInfo]:
         logger.info(f"Starting fast scan of {path}")
         self.progress = ScanProgress()
         self.progress.start_time = datetime.now()
@@ -166,16 +190,16 @@ class FastScannerEngine:
             # Single stat() call with timeout protection
             stat_result = file_path.stat()
             
-            # Skip huge files (unified limit: 1GB)
-            if stat_result.st_size > 1024 * 1024 * 1024:  # > 1GB
+            # Metadata is indexed for every size unless a limit is configured.
+            if METADATA_INDEX_LIMIT is not None and stat_result.st_size > METADATA_INDEX_LIMIT:
                 return None
-            
+
             # Build FileInfo quickly
             file_info = FileInfo(
                 path=file_path,
                 filename=file_path.name,
                 size_bytes=stat_result.st_size,
-                created_at=datetime.fromtimestamp(stat_result.st_ctime),
+                created_at=stat_created_at(stat_result),
                 modified_at=datetime.fromtimestamp(stat_result.st_mtime),
                 extension=file_path.suffix.lower(),
                 file_type=self._classify_file_type_fast(file_path.suffix.lower()),
@@ -253,7 +277,11 @@ class FastScannerEngine:
     ) -> Iterator[FileInfo]:
         """Compatibility method that calls fast_scan for each path with proper callback."""
         logger.info(f"Starting scan_paths for {len(paths)} paths with callback: {progress_callback is not None}")
-        
+
+        # Reset cancellation once per invocation so a mid-scan cancel applies to
+        # all remaining roots, while a new invocation starts fresh.
+        self._reset_cancel()
+
         for i, path in enumerate(paths):
             logger.info(f"Scanning path {i+1}/{len(paths)}: {path}")
             
@@ -261,15 +289,15 @@ class FastScannerEngine:
             self.progress = ScanProgress()
             self.progress.start_time = datetime.now()
             
-            yield from self.fast_scan(Path(path), limit=limit, progress_callback=progress_callback)
+            yield from self._fast_scan(Path(path), limit=limit, progress_callback=progress_callback)
     
     def pause(self) -> None:
-        """Pause scanning (placeholder for compatibility)."""
-        logger.info("Pause requested (not implemented in fast scanner)")
+        """Pause is not supported by FastScannerEngine; no-op for compatibility."""
+        logger.info("Pause requested (not supported by fast scanner)")
     
     def resume(self) -> None:
-        """Resume scanning (placeholder for compatibility)."""
-        logger.info("Resume requested (not implemented in fast scanner)")
+        """Resume is not supported by FastScannerEngine; no-op for compatibility."""
+        logger.info("Resume requested (not supported by fast scanner)")
     
     def cancel(self) -> None:
         """Cancel the scan."""

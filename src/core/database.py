@@ -11,7 +11,7 @@ import os
 import time
 
 from loguru import logger
-from ..scanner.models import FileInfo, FileType, Priority
+from ..scanner.models import EXTRACTION_LIMIT, FileInfo, FileType, Priority
 
 
 # --- Lexical search (FTS5) -------------------------------------------------
@@ -66,42 +66,12 @@ class DatabaseManager:
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path or Path("data/indexes/files.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Clean up any WAL/SHM files from previous sessions
-        self._cleanup_database_files()
-        
+
+        # SQLite owns the WAL/SHM lifecycle. The harness must never unlink
+        # ``-wal``/``-shm`` itself: doing so can corrupt or lock a database that
+        # another connection is actively using.
         self._init_database()
-    
-    def _cleanup_database_files(self):
-        """Clean up WAL and SHM files that might cause locks."""
-        try:
-            wal_file = Path(str(self.db_path) + "-wal")
-            shm_file = Path(str(self.db_path) + "-shm")
-            
-            # Only clean if files are old (>1 minute)
-            current_time = time.time()
-            
-            if wal_file.exists():
-                file_age = current_time - wal_file.stat().st_mtime
-                if file_age > 60:  # 1 minute
-                    try:
-                        wal_file.unlink()
-                        logger.info("Cleaned up old WAL file")
-                    except OSError:
-                        pass
-            
-            if shm_file.exists():
-                file_age = current_time - shm_file.stat().st_mtime
-                if file_age > 60:  # 1 minute
-                    try:
-                        shm_file.unlink()
-                        logger.info("Cleaned up old SHM file")
-                    except OSError:
-                        pass
-                        
-        except Exception as e:
-            logger.debug(f"Could not clean database files: {e}")
-    
+
     def _check_and_unlock_database(self):
         """Check for database locks and attempt to resolve them."""
         try:
@@ -273,15 +243,36 @@ class DatabaseManager:
                     logger.error(f"Database error after {attempt + 1} attempts: {e}")
                     raise
     
+    # Invariant: absence of a path during an unqualified (partial, cancelled or
+    # volume-disconnected) scan is NOT proof of deletion. Deletion/rename/move
+    # reconciliation is intentionally not implemented here and belongs to a
+    # later mission with volume identity and completed scan-run boundaries.
     def save_file(self, file_info: FileInfo) -> int:
-        """Save a single file to database."""
+        """Insert or refresh a file's scan metadata, returning its row id.
+
+        Existing extracted content (``content_text``/``content_extracted``) is
+        preserved; only scanner-owned metadata is refreshed.
+        """
         with self.get_connection() as conn:
             cursor = conn.execute("""
-                INSERT OR IGNORE INTO files (
-                    path, filename, extension, size_bytes, file_type, 
+                INSERT INTO files (
+                    path, filename, extension, size_bytes, file_type,
                     priority, created_at, modified_at, metadata,
-                    parent_dir, depth
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    parent_dir, depth, checksum, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(path) DO UPDATE SET
+                    filename = excluded.filename,
+                    extension = excluded.extension,
+                    size_bytes = excluded.size_bytes,
+                    file_type = excluded.file_type,
+                    priority = excluded.priority,
+                    created_at = COALESCE(excluded.created_at, files.created_at),
+                    modified_at = excluded.modified_at,
+                    metadata = excluded.metadata,
+                    parent_dir = excluded.parent_dir,
+                    depth = excluded.depth,
+                    checksum = COALESCE(excluded.checksum, files.checksum),
+                    indexed_at = CURRENT_TIMESTAMP
             """, (
                 str(file_info.path),
                 file_info.filename,
@@ -293,15 +284,29 @@ class DatabaseManager:
                 file_info.modified_at.isoformat() if file_info.modified_at else None,
                 json.dumps(file_info.metadata) if file_info.metadata else None,
                 str(file_info.path.parent),
-                len(file_info.path.parts) - 1
+                len(file_info.path.parts) - 1,
+                file_info.checksum or None,
             ))
             conn.commit()
-            return cursor.lastrowid
+            row = conn.execute(
+                "SELECT id FROM files WHERE path = ?", (str(file_info.path),)
+            ).fetchone()
+            return int(row[0]) if row else int(cursor.lastrowid)
     
     def save_files_batch(self, files: List[FileInfo], batch_size: int = 1000) -> int:
-        """Save multiple files in batches."""
+        """Insert or refresh metadata for many files.
+
+        Uses the same UPSERT contract as :meth:`save_file` (preserving extracted
+        content, and preserving an existing non-NULL ``checksum``/``created_at``
+        when the incoming scan value is NULL).
+
+        Returns the number of **input records processed/upserted**, not the
+        number of distinct database rows: if the same ``path`` appears twice in
+        one input batch, both are processed and the count is 2 while the table
+        keeps a single row.
+        """
         total_saved = 0
-        
+
         with self.get_connection() as conn:
             for i in range(0, len(files), batch_size):
                 batch = files[i:i + batch_size]
@@ -317,27 +322,41 @@ class DatabaseManager:
                         f.modified_at.isoformat() if f.modified_at else None,
                         json.dumps(f.metadata) if f.metadata else None,
                         str(f.path.parent),
-                        len(f.path.parts) - 1
+                        len(f.path.parts) - 1,
+                        f.checksum or None,
                     )
                     for f in batch
                 ]
-                
+
                 conn.executemany("""
-                    INSERT OR IGNORE INTO files (
+                    INSERT INTO files (
                         path, filename, extension, size_bytes, file_type,
                         priority, created_at, modified_at, metadata,
-                        parent_dir, depth
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        parent_dir, depth, checksum, indexed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(path) DO UPDATE SET
+                        filename = excluded.filename,
+                        extension = excluded.extension,
+                        size_bytes = excluded.size_bytes,
+                        file_type = excluded.file_type,
+                        priority = excluded.priority,
+                        created_at = COALESCE(excluded.created_at, files.created_at),
+                        modified_at = excluded.modified_at,
+                        metadata = excluded.metadata,
+                        parent_dir = excluded.parent_dir,
+                        depth = excluded.depth,
+                        checksum = COALESCE(excluded.checksum, files.checksum),
+                        indexed_at = CURRENT_TIMESTAMP
                 """, data)
-                
+
                 total_saved += len(batch)
-                
+
                 if total_saved % 5000 == 0:
-                    logger.info(f"Saved {total_saved:,} files to database")
-            
+                    logger.info(f"Upserted {total_saved:,} files to database")
+
             conn.commit()
-        
-        logger.info(f"Total files saved: {total_saved:,}")
+
+        logger.info(f"Total files upserted: {total_saved:,}")
         return total_saved
     
     def _build_filter_conditions(
@@ -560,10 +579,10 @@ class DatabaseManager:
                 SELECT * FROM files
                 WHERE content_extracted = 0
                 AND file_type IN ('document', 'email')
-                AND size_bytes < 52428800  -- 50MB limit
+                AND size_bytes < ?
                 ORDER BY priority DESC, size_bytes ASC
                 LIMIT ?
-            """, (limit,))
+            """, (EXTRACTION_LIMIT, limit))
             
             return [dict(row) for row in cursor]
     

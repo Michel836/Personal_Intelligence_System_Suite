@@ -25,10 +25,8 @@ def test_scan_paths_yields_schema_valid_fileinfo(tmp_path: Path) -> None:
 
     assert files
     assert all(isinstance(file_info, FileInfo) for file_info in files)
-    assert all(
-        file_info.created_at is not None and file_info.modified_at is not None
-        for file_info in files
-    )
+    assert all(file_info.modified_at is not None for file_info in files)
+    # ``created_at`` is optional: Linux exposes no reliable birth time.
 
 
 def test_save_files_batch_persists_scanner_output(tmp_path: Path) -> None:
