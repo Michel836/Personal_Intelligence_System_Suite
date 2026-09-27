@@ -24,8 +24,8 @@ class AIService:
         self.router = router or build_router(self.config, self.usage, hardware_profile)
 
     # -- selection ---------------------------------------------------------
-    def llm(self, *, content_level: str = "text"):
-        return self.router.llm(content_level=content_level)
+    def llm(self, *, content_level: str = "text", model_override: Optional[str] = None):
+        return self.router.llm(content_level=content_level, model_override=model_override)
 
     def embeddings(self, *, requires_text: bool = True):
         return self.router.embeddings(requires_text=requires_text)

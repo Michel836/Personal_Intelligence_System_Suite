@@ -7,6 +7,8 @@ content never leaves the operator's infrastructure by default.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from typing import Any, Optional, Sequence
 
 from loguru import logger
@@ -42,6 +44,28 @@ def _normalize_ollama_error(exc: Exception) -> AIProviderError:
     return ProviderResponseError(msg)
 
 
+# Ollama health is probed over HTTP; cache it briefly so provider selection does
+# not make a network round-trip on every chat/status call.
+_AVAIL_TTL = max(0.0, float(os.environ.get("PIS_OLLAMA_AVAIL_TTL", "5")))
+_avail_cache: dict[str, tuple[float, bool]] = {}
+_avail_lock = threading.Lock()
+
+
+def _cached_availability(base_url: str, probe) -> bool:
+    now = time.monotonic()
+    with _avail_lock:
+        hit = _avail_cache.get(base_url)
+        if hit is not None and (now - hit[0]) < _AVAIL_TTL:
+            return hit[1]
+    try:
+        value = bool(probe())
+    except Exception:  # noqa: BLE001
+        value = False
+    with _avail_lock:
+        _avail_cache[base_url] = (time.monotonic(), value)
+    return value
+
+
 def _supports_think() -> bool:
     if not OLLAMA_AVAILABLE:
         return False
@@ -73,12 +97,13 @@ class OllamaLLMProvider(LLMProvider):
     def is_available(self) -> bool:
         if not OLLAMA_AVAILABLE:
             return False
-        try:
+
+        def _probe() -> bool:
             client = self._client()
             (client.list() if client else ollama.list())
             return True
-        except Exception:  # noqa: BLE001 - health check never raises
-            return False
+
+        return _cached_availability(self.base_url, _probe)
 
     def model_info(self) -> ModelInfo:
         return ModelInfo(provider=self.name, model=self.model, remote=False)
@@ -149,10 +174,10 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         self._gen = OllamaEmbeddingGenerator(self.model)
 
     def is_available(self) -> bool:
-        try:
+        def _probe() -> bool:
             return bool(self._gen.is_available())
-        except Exception:  # noqa: BLE001
-            return False
+
+        return _cached_availability(f"emb:{self.model}", _probe)
 
     def dimension(self) -> int:
         return int(self._gen.embedding_dim or 0)

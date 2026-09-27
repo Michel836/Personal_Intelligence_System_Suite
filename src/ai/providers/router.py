@@ -172,6 +172,15 @@ class MeteredLLMProvider(LLMProvider):
         inner = getattr(self._provider, "chain", None)
         return inner() if callable(inner) else [self._provider.name]
 
+    @property
+    def model(self):
+        return getattr(self._provider, "model", None)
+
+    @model.setter
+    def model(self, value):
+        if hasattr(self._provider, "model"):
+            self._provider.model = value
+
     def chat(self, messages, *, options=None):
         start = time.perf_counter()
         result = self._provider.chat(messages, options=options)
@@ -295,7 +304,7 @@ class ProviderRouter:
             return cache[backend]
 
     # -- public selection --------------------------------------------------
-    def llm(self, *, content_level: str = "none") -> LLMProvider:
+    def llm(self, *, content_level: str = "none", model_override: str | None = None) -> LLMProvider:
         requires_text = content_level == "text"
         policy = self.llm_policy
         chain: list[LLMProvider] = []
@@ -314,6 +323,11 @@ class ProviderRouter:
             return _UnavailableLLM(
                 "no LLM provider available for the current mode/policy/backend"
             )
+        if model_override:
+            # Explicit model selection must win over the provider default.
+            for provider in chain:
+                if hasattr(provider, "model"):
+                    provider.model = model_override
         if len(chain) == 1:
             return MeteredLLMProvider(chain[0], self.usage)
         return MeteredLLMProvider(FallbackLLMProvider(chain), self.usage)

@@ -68,21 +68,20 @@ class ChatEngine:
         self.db = db or DatabaseManager()
         self.semantic_search = SemanticSearchEngine(self.db)
         self._service = get_ai_service()
-        self._llm = self._service.llm(content_level="text")
-        if model_name and hasattr(self._llm, "model"):
-            # Explicit model override; otherwise the configured provider model wins.
-            self._llm.model = model_name  # type: ignore[attr-defined]
+        self._model_override = model_name
+        self._llm = self._service.llm(content_level="text", model_override=model_name)
         info = self._llm.model_info()
         self.model_name = model_name or info.model or model_for("interactive_chat")
 
         # Conversation history
         self.conversation_history = []
 
-        # Fallback to simple chat when no LLM provider is available.
-        self.simple_fallback = None
+        # Always keep a deterministic fallback; it is used when no provider is
+        # available or when a configured provider fails at call time (for
+        # example a model that is not installed).
+        self.simple_fallback = SimpleChatEngine(self.db)
         if not self._llm.is_available():
-            logger.info("No LLM provider available - using SimpleChatEngine fallback")
-            self.simple_fallback = SimpleChatEngine(self.db)
+            logger.info("No LLM provider available - SimpleChatEngine will answer")
         
         # System prompt
         self.system_prompt = """You are an intelligent assistant for a personal document management system called "36TB Intelligence". 
@@ -117,10 +116,10 @@ Guidelines:
         metadata-only remote selection is used (filenames/paths only).
         """
         policy = self._service.config.content_policy
-        llm = self._service.llm(content_level="text")
+        llm = self._service.llm(content_level="text", model_override=self._model_override)
         if llm.is_available() and not (llm.remote and not policy.allows_extracted_text):
             return llm, True
-        return self._service.llm(content_level="metadata"), False
+        return self._service.llm(content_level="metadata", model_override=self._model_override), False
 
     def get_model_status(self) -> Dict[str, Any]:
         """Compact provider status for the UI/diagnostics (never exposes keys)."""
@@ -257,10 +256,14 @@ Guidelines:
         
         except Exception as e:
             logger.error(f"Error in chat: {e}")
+            # Provider failure (e.g. missing model, outage): degrade to the
+            # deterministic fallback rather than surfacing a provider error.
+            if self.simple_fallback is not None:
+                return self.simple_fallback.chat(user_message, search_context)
             return {
-                "response": f"Sorry, I encountered an error: {str(e)}",
-                "error": str(e),
-                "sources": []
+                "response": "The AI provider is currently unavailable.",
+                "error": "provider_unavailable",
+                "sources": [],
             }
     
     def _search_relevant_documents(
