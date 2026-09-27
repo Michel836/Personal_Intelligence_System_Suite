@@ -247,8 +247,7 @@ class ModuleTester:
         
         # Test TurboScanner
         try:
-            sys.path.append(str(Path(__file__).parent))
-            from turbo_scan import TurboScanner
+            from src.scanner.turbo_scan import TurboScanner
             
             def test_turbo_init():
                 scanner = TurboScanner()

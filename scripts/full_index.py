@@ -18,6 +18,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from src.scanner.fast_engine import FastScannerEngine
 from src.core.database import DatabaseManager
 from src.core.logging import setup_logging
+from src.core.scan_service import ScanService
 from src.scanner.models import FileInfo
 
 # Setup
@@ -48,6 +49,8 @@ def full_index_scan():
     # Initialize components
     scanner = FastScannerEngine()
     db = DatabaseManager()
+    # A previous process may have died mid-scan; never let that run reconcile.
+    db.recover_stale_runs()
     
     console.print(f"📁 [bold]Scan Path:[/bold] {scan_path}")
     console.print(f"🎯 [bold]Limit:[/bold] {'Unlimited' if limit == 0 else f'{limit:,} files'}")
@@ -88,8 +91,11 @@ def full_index_scan():
             scan_task = progress.add_task("🔍 Scanning files...", total=None)
         
         save_task = progress.add_task("💾 Saving batches...", total=None)
-        
+
+        session = None
+
         try:
+            session = ScanService(db).session(scan_path)
             # Main scanning loop
             for file_info in scanner.fast_scan(scan_path, limit=limit if limit > 0 else None):
                 current_batch.append(file_info)
@@ -116,40 +122,33 @@ def full_index_scan():
                         description=f"🔍 Scanning... {total_processed:,} files"
                     )
                 
-                # Save batch when full or memory limit reached
+                # Persist through the canonical lifecycle. Errors propagate so
+                # the run is marked FAILED and never reconciles partial data.
                 if len(current_batch) >= batch_size or total_processed % max_memory_items == 0:
-                    try:
-                        if current_batch:  # Only save if we have items
-                            saved = db.save_files_batch(current_batch)
-                            total_saved += saved
-                            current_batch.clear()  # Free memory immediately
-                            
-                            progress.update(
-                                save_task,
-                                description=f"💾 Saved: {total_saved:,} files"
-                            )
-                        
-                    except Exception as e:
-                        console.print(f"[red]❌ Error saving batch: {e}[/red]")
-                        stats['errors'] += 1
-                        current_batch.clear()  # Clear even on error to prevent memory issues
-            
-            # Save remaining files
+                    if current_batch:  # Only save if we have items
+                        total_saved += session.record(current_batch)
+                        current_batch.clear()  # Free memory immediately
+                        progress.update(
+                            save_task,
+                            description=f"💾 Saved: {total_saved:,} files"
+                        )
+
+            # Save remaining files and complete the run (reconciles safely).
             if current_batch:
-                try:
-                    saved = db.save_files_batch(current_batch)
-                    total_saved += saved
-                    progress.update(
-                        save_task,
-                        description=f"💾 Final save: {total_saved:,} files"
-                    )
-                except Exception as e:
-                    console.print(f"[red]❌ Error saving final batch: {e}[/red]")
-                    stats['errors'] += 1
-        
+                total_saved += session.record(current_batch)
+                progress.update(
+                    save_task,
+                    description=f"💾 Final save: {total_saved:,} files"
+                )
+            session.complete()
+
         except KeyboardInterrupt:
+            if session is not None:
+                session.cancel()
             console.print("\n[yellow]⏹️  Scan interrupted by user[/yellow]")
         except Exception as e:
+            if session is not None:
+                session.fail(str(e))
             console.print(f"[red]❌ Scan error: {e}[/red]")
             stats['errors'] += 1
     

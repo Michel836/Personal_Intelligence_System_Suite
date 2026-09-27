@@ -8,26 +8,55 @@
 [![SQLite](https://img.shields.io/badge/Database-SQLite-blue.svg)](https://www.sqlite.org)
 [![Status](https://img.shields.io/badge/Status-v1.0%20Active-brightgreen.svg)]()
 
-## 🎯 Quick Start
+## 🚦 Release Candidate (v1.0.0-rc1)
 
-**Three ways to launch based on your needs:**
+M013–M020 are consolidated and validated as a release candidate. Start here:
 
-| Launch Mode | RAM Usage | Startup Time | Features | Port |
-|-------------|-----------|--------------|----------|------|
-| **⚡ LITE MODE** | 30MB | <1s | Basic search & scan | [8510](http://localhost:8510) |
-| **🎯 SMART LAUNCHER** | Variable | Variable | Choose your modules | [8504](http://localhost:8504) |
-| **💪 FULL POWER** | 2.8GB | ~25s | All features enabled | [8501](http://localhost:8501) |
+* **[Release Candidate guide](docs/RELEASE_CANDIDATE.md)** — install, operate,
+  privacy model, backup/restore, limits and canonical vs legacy surfaces.
+* **[Release notes](docs/RELEASE_NOTES.md)** — capabilities and known limitations.
+* **Release acceptance:** `tests/release/` (end-to-end, profiles, backup round-trip,
+  privacy, CLI/API, UI smoke) plus `.validation/<UTC>/validation.json`.
+
+One canonical app, three profiles; SQLite canonical; local-only privacy default;
+source files are never modified.
+
+## 🎯 Quick Start (Linux / Kubuntu first)
+
+**One canonical application, three launch profiles (M012-B2).** Every profile
+runs the same app (`src/ui/app.py`); they differ only in defaults and which
+advanced capabilities are exposed. See
+[`docs/LAUNCH_PROFILES.md`](docs/LAUNCH_PROFILES.md) for the full contract and
+measured startup/RAM.
+
+| Profile | Intent | Default port |
+|---------|--------|--------------|
+| **⚡ LITE** | Fastest startup, lowest resources, core scan/search/viewer/archive, local-only AI | 8510 |
+| **🎯 SMART** | Hardware-aware `AUTO` AI, adaptive defaults, all capabilities available lazily | 8504 |
+| **💪 FULL** | Every implemented capability, lazy-loaded, privacy-constrained | 8501 |
 
 ```bash
-# Launch LITE mode (fastest)
-.venv/Scripts/python.exe -m streamlit run lite_mode.py --server.port=8510
+# Linux / Kubuntu / macOS (recommended wrappers)
+scripts/run_lite.sh
+scripts/run_smart.sh
+scripts/run_full.sh
 
-# Launch Smart Launcher (customizable)  
-.venv/Scripts/python.exe -m streamlit run smart_launcher.py --server.port=8504
+# Equivalent unified launcher (any platform)
+.venv/bin/python -m src.launcher --profile lite
+.venv/bin/python -m src.launcher --profile smart
+.venv/bin/python -m src.launcher --profile full
 
-# Launch full application (classic)
-.venv/Scripts/python.exe -m streamlit run launcher.py
+# Windows
+.venv\Scripts\python.exe -m src.launcher --profile lite
 ```
+
+> **Historical note.** The original Windows-only commands
+> (`streamlit run lite_mode.py`, `.venv/Scripts/python.exe`, ports 8510/8504/8501
+> as a hard dependency) and the old 30 MB / <1 s / 2.8 GB / ~25 s figures are
+> kept below for traceability only. The `launchers/*.py` scripts are now thin
+> compatibility wrappers around `src.launcher`; see
+> [`docs/LAUNCH_PROFILES.md`](docs/LAUNCH_PROFILES.md#historical-claims-review)
+> for the measured comparison.
 
 ## ✨ Latest Features (v1.0)
 
@@ -92,37 +121,37 @@
 
 ### 🏃‍♂️ LITE Mode (Ultra-Fast)
 ```bash
-# Launch command
-.venv/Scripts/python.exe -m streamlit run lite_mode.py --server.port=8510
+scripts/run_lite.sh
+# or: .venv/bin/python -m src.launcher --profile lite
 ```
 **Perfect for:** Quick file browsing and basic search
-- **RAM Usage**: ~30MB
-- **Startup Time**: <1 second
-- **Features**: File search, basic scanning, statistics
-- **Database**: Lightweight SQLite
-- **No AI dependencies** - Pure speed
+- **Features**: canonical scan, FTS filename/content search, archive viewer, dashboard/statistics, file viewer
+- **AI**: `PIS_AI_MODE=local`, no heavyweight model preload, local-only privacy
+- **No GPU / no Ollama required**, usable fully offline
+- **Historical claim**: 30 MB / <1 s — see measured figures in the operations doc
 
-### 🎯 Smart Launcher (Configurable)
+### 🎯 Smart Launcher (Configurable / Hardware-Aware)
 ```bash
-# Launch command
-.venv/Scripts/python.exe -m streamlit run smart_launcher.py --server.port=8504
+scripts/run_smart.sh
+# or: .venv/bin/python -m src.launcher --profile smart
 ```
-**Perfect for:** Customized workflows
-- **Presets**: Minimal, Standard, AI-Powered, Full Power
-- **Module Selection**: Choose exactly what you need
-- **Resource Estimation**: See RAM/CPU impact before launch
-- **Configuration Saving**: Remember your preferences
+**Perfect for:** Customized workflows on this machine
+- **Hardware-aware** `AUTO` AI selection via the M012-A provider router
+- **Adaptive defaults** from `core/perf_config.HardwareProfile`
+- **All capabilities available**, loaded lazily on first use
+- **Resource/backend status** in the sidebar and dashboard
+- **Local-only privacy default** (`PIS_REMOTE_CONTENT_POLICY=never`)
 
 ### 💪 Full Power (Complete System)
 ```bash
-# Launch command
-.venv/Scripts/python.exe -m streamlit run launcher.py
+scripts/run_full.sh
+# or: .venv/bin/python -m src.launcher --profile full
 ```
 **Perfect for:** Advanced AI features and full capabilities
-- **RAM Usage**: ~2.8GB
-- **Startup Time**: ~25 seconds
-- **Features**: AI chat, semantic search, advanced visualizations
-- **All modules enabled**: Scanner, AI, extractors, monitoring
+- **Features**: AI chat, semantic search, extraction, OCR, archives, visualizations, cloud sync, MCP/status
+- **Lazy loading**: no model is loaded merely because the profile is FULL
+- **All capabilities exposed**, still constrained by the remote-content policy
+- **Historical claim**: 2.8 GB / ~25 s — see measured figures in the operations doc
 
 ---
 
@@ -179,23 +208,26 @@ cd Projet_IA_Indexeur_SSD
 
 # 2. Create virtual environment
 python -m venv .venv
-.venv\Scripts\activate
+source .venv/bin/activate        # Linux / macOS
+# .venv\Scripts\activate          # Windows
 
 # 3. Install dependencies
-pip install streamlit sqlite3 pathlib psutil
+pip install -r requirements.txt
 
-# 4. Launch (choose your mode)
-.venv/Scripts/python.exe -m streamlit run lite_mode.py --server.port=8510
+# 4. Launch (choose your profile)
+.venv/bin/python -m src.launcher --profile lite
 ```
 
 ## 📋 Project Structure
 
 ```
 36TB_Intelligence/
-├── 🚀 LAUNCHERS
-│   ├── lite_mode.py           # ⚡ Ultra-fast launcher (30MB, <1s)
-│   ├── smart_launcher.py       # 🎯 Configurable launcher
-│   └── launcher.py             # 💪 Full-power launcher
+├── 🚀 LAUNCH PROFILES (M012-B2)
+│   ├── src/launcher.py         # Unified launcher (one canonical app)
+│   ├── scripts/run_lite.sh     # ⚡ LITE profile wrapper
+│   ├── scripts/run_smart.sh    # 🎯 SMART profile wrapper
+│   ├── scripts/run_full.sh     # 💪 FULL profile wrapper
+│   └── launchers/*.py          # Historical compatibility shims
 │
 ├── 📁 CORE APPLICATION
 │   ├── src/
@@ -295,9 +327,9 @@ with start_activity("CUSTOM", "Your operation description"):
 
 #### Port Already in Use
 ```bash
-# Error: Address already in use
-# Solution: Use different port
-.venv/Scripts/python.exe -m streamlit run lite_mode.py --server.port=8511
+# In-use default ports are detected automatically; the launcher picks the next free port.
+# To request a specific port explicitly (fails loudly if occupied):
+.venv/bin/python -m src.launcher --profile lite --port 8511
 ```
 
 #### Database Locked
@@ -867,6 +899,10 @@ timeline.create_timeline(
 
 ### Command Line Interface
 
+> **Not implemented in the current revision.** No `src/cli.py` module or
+> `36tb-intel` console script exists yet; the commands below describe a planned
+> surface and are not executable. Use the Streamlit UI or the `scripts/` helpers.
+
 ```bash
 # Scanning operations
 36tb-intel scan [drive] [options]
@@ -896,6 +932,9 @@ timeline.create_timeline(
 ```
 
 ### API Endpoints
+
+> **Not implemented in the current revision.** No `src/api/` FastAPI application
+> exists yet; the endpoints below describe a planned surface and are not served.
 
 ```yaml
 # RESTful API endpoints

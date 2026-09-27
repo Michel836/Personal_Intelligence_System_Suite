@@ -1,6 +1,6 @@
 # Makefile for 36TB Intelligence
 
-.PHONY: help install install-dev setup test lint format clean run scan ui api
+.PHONY: help install install-dev setup test lint format clean run scan ui lite smart full
 
 # Default target
 help:
@@ -17,7 +17,6 @@ help:
 	@echo "  run         Run quick scan test"
 	@echo "  scan        Scan specific drive (make scan DRIVE=C:)"
 	@echo "  ui          Start Streamlit UI"
-	@echo "  api         Start FastAPI server"
 
 # Installation
 install:
@@ -81,10 +80,17 @@ else
 endif
 
 ui:
-	streamlit run src/ui/app.py
+	python -m src.launcher --profile full
 
-api:
-	uvicorn src.api.main:app --reload
+# Modern launch profiles (M012-B2): one canonical app, three profiles.
+lite:
+	python -m src.launcher --profile lite
+
+smart:
+	python -m src.launcher --profile smart
+
+full:
+	python -m src.launcher --profile full
 
 # Development utilities
 check-install:

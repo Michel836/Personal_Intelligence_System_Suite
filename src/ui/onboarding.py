@@ -6,6 +6,8 @@ import json
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
+from src.core.scan_service import ScanService
+
 class OnboardingFlow:
     """Interactive onboarding experience for new users."""
     
@@ -364,18 +366,29 @@ class OnboardingFlow:
             try:
                 scanner = st.session_state.scanner
                 
+                scan_root = None
                 if "common folders" in scan_option.lower():
                     # Scan common directories
-                    files = list(scanner.fast_scan(Path("C:\\Users"), limit=500))
+                    scan_root = Path("C:\\Users")
+                    files = list(scanner.fast_scan(scan_root, limit=500))
                 elif "full system" in scan_option.lower():
                     # Full system scan
-                    files = list(scanner.fast_scan(Path("C:\\"), limit=1000))
+                    scan_root = Path("C:\\")
+                    files = list(scanner.fast_scan(scan_root, limit=1000))
                 else:
                     # Custom scan (mock for demo)
                     files = []
-                
+
+                if scan_root is not None:
+                    session = ScanService(st.session_state.db).session(scan_root)
+                    try:
+                        if files:
+                            session.record(files)
+                        session.complete()
+                    except Exception as scan_error:
+                        session.fail(str(scan_error))
+
                 if files:
-                    st.session_state.db.save_files_batch(files)
                     st.success(f"✅ Scanned {len(files)} files!")
                 else:
                     st.success("✅ Demo scan completed!")

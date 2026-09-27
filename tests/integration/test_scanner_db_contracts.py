@@ -1,0 +1,85 @@
+"""Contract tests for the scanner -> database -> content pipeline.
+
+These pin the *current* documented production contracts:
+
+* ``FastScannerEngine.scan_paths`` yields schema-valid ``FileInfo`` objects;
+* scanned metadata is persisted explicitly with ``save_files_batch``;
+* content is only searchable after ``DatabaseManager.update_content``;
+* ``DatabaseManager.search_files`` uses FTS5 with implicit AND between terms and
+  supports double-quoted exact phrases.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from src.core.database import DatabaseManager
+from src.scanner.fast_engine import FastScannerEngine
+from src.scanner.models import FileInfo, FileType
+
+
+def test_scan_paths_yields_schema_valid_fileinfo(tmp_path: Path) -> None:
+    (tmp_path / "doc.txt").write_text("hello world", encoding="utf-8")
+    (tmp_path / "pic.jpg").touch()
+
+    files = list(FastScannerEngine().scan_paths([tmp_path]))
+
+    assert files
+    assert all(isinstance(file_info, FileInfo) for file_info in files)
+    assert all(file_info.modified_at is not None for file_info in files)
+    # ``created_at`` is optional: Linux exposes no reliable birth time.
+
+
+def test_save_files_batch_persists_scanner_output(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a.txt").write_text("alpha", encoding="utf-8")
+    (source / "b.jpg").touch()
+
+    db = DatabaseManager(tmp_path / "index.db")
+    files = list(FastScannerEngine().scan_paths([source]))
+    assert files
+
+    saved = db.save_files_batch(files)
+    assert saved == len(files)
+
+    rows = db.search_files(limit=100)
+    assert {row["filename"] for row in rows} == {file_info.filename for file_info in files}
+
+
+def test_update_content_required_before_content_is_searchable(
+    tmp_path: Path, file_info_factory
+) -> None:
+    db = DatabaseManager(tmp_path / "index.db")
+    file_id = db.save_file(file_info_factory(tmp_path / "contract.txt", size_bytes=10))
+
+    # Metadata exists, but content is not searchable until extraction updates it.
+    assert db.search_files(query="uniquemarker") == []
+    row = db.search_files(query="contract")[0]
+    assert row["content_text"] is None
+
+    db.update_content(file_id, "uniquemarker alpha beta")
+    assert len(db.search_files(query="uniquemarker")) == 1
+
+
+def test_multi_term_search_matches_disjoint_tokens(
+    tmp_path: Path, file_info_factory
+) -> None:
+    db = DatabaseManager(tmp_path / "index.db")
+    file_id = db.save_file(file_info_factory(tmp_path / "terms.txt", size_bytes=10))
+    db.update_content(file_id, "content about testing and performance here")
+
+    # M004B: FTS5 applies implicit AND across terms, so non-contiguous
+    # multi-word queries now match (the old contiguous LIKE path found none).
+    assert len(db.search_files(query="testing and performance")) == 1
+    assert len(db.search_files(query="testing performance")) == 1
+
+
+def test_scanner_classifies_common_types(tmp_path: Path) -> None:
+    (tmp_path / "report.txt").write_text("text", encoding="utf-8")
+    (tmp_path / "photo.jpg").touch()
+
+    files = list(FastScannerEngine().scan_paths([tmp_path]))
+    by_name = {file_info.filename: file_info for file_info in files}
+
+    assert by_name["report.txt"].file_type == FileType.DOCUMENT
+    assert by_name["photo.jpg"].file_type == FileType.IMAGE

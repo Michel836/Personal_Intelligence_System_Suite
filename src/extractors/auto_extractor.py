@@ -16,8 +16,9 @@ from .enhanced_extractor import EnhancedExtractor
 class AutoExtractor:
     """Automatic content extraction system for large-scale processing."""
     
-    def __init__(self, db_path: str = "data/indexes/files.db", max_workers: int = 4):
-        self.db_path = db_path
+    def __init__(self, db_path=None, max_workers: int = 4):
+        from ..core.database import default_db_path
+        self.db_path = db_path or default_db_path()
         self.max_workers = max_workers
         
         # Initialize extraction manager with enhanced extractor
@@ -95,8 +96,44 @@ class AutoExtractor:
             logger.error(f"Error getting extraction candidates: {e}")
             return []
     
+    def index_archives(self, limit: int = 10000, force: bool = False) -> Dict[str, Any]:
+        """Discover and index archives as virtual members (M009J.18).
+
+        Archive discovery is kept separate from member content extraction: this
+        method lists members and (per policy) extracts supported member text.
+        """
+        from ..archives.indexer import index_archives_in_db
+        from ..archives.limits import ArchivePolicy
+        from ..core.database import DatabaseManager
+
+        policy = ArchivePolicy.from_env()
+        if not policy.enabled:
+            return {"enabled": False, "archives": 0, "members": 0}
+        try:
+            db = DatabaseManager(self.db_path)
+            results = index_archives_in_db(db, limit=limit, force=force)
+        except Exception as exc:  # noqa: BLE001 - archives must never break extraction
+            logger.warning(f"archive indexing skipped: {exc}")
+            return {"enabled": True, "archives": 0, "members": 0, "error": str(exc)}
+        statuses: Dict[str, int] = {}
+        for r in results:
+            statuses[r.status] = statuses.get(r.status, 0) + 1
+        summary = {
+            "enabled": True,
+            "archives": len(results),
+            "members": sum(r.member_count for r in results),
+            "extracted": sum(r.extracted for r in results),
+            "nested": sum(r.nested for r in results),
+            "statuses": statuses,
+        }
+        self.stats.setdefault("archives_indexed", 0)
+        self.stats["archives_indexed"] += len(results)
+        logger.info(f"Archive indexing: {summary}")
+        return summary
+
     def extract_priority_batch(self, batch_size: int = 100, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """Extract content from a priority batch of files."""
+        self.index_archives()
         candidates = self.get_extraction_candidates(batch_size)
         
         if not candidates:
@@ -166,6 +203,7 @@ class AutoExtractor:
     
     def extract_all_candidates(self, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """Extract content from all available candidates."""
+        self.index_archives()
         all_candidates = self.get_extraction_candidates()
         
         if not all_candidates:
@@ -239,39 +277,25 @@ class AutoExtractor:
         return results
     
     def _extract_and_save(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract content from a file and save to database."""
+        """Extract content from a file and save via the canonical DB writer."""
         file_path = Path(candidate['path'])
         
         try:
             # Perform extraction
             extraction_result = self.extraction_manager.extract_single(file_path)
-            
-            # Save to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
+
+            # Persist through DatabaseManager so semantic dirty-state tracking
+            # and the FTS triggers stay in sync (no raw content UPDATE).
+            from ..core.database import DatabaseManager
+
+            db = DatabaseManager(self.db_path)
             if extraction_result.success and extraction_result.content:
-                # Update with extracted content
-                cursor.execute("""
-                    UPDATE files 
-                    SET content_text = ?, content_extracted = 1, indexed_at = ?
-                    WHERE id = ?
-                """, (extraction_result.content, datetime.now().isoformat(), candidate['id']))
-                
+                db.update_content(int(candidate['id']), extraction_result.content)
                 logger.debug(f"Extracted {len(extraction_result.content)} chars from {candidate['filename']}")
             else:
-                # Mark as attempted but failed
-                cursor.execute("""
-                    UPDATE files 
-                    SET content_extracted = 1, indexed_at = ?
-                    WHERE id = ?
-                """, (datetime.now().isoformat(), candidate['id']))
-                
+                db.mark_extraction_attempted(int(candidate['id']))
                 logger.debug(f"Failed to extract content from {candidate['filename']}: {extraction_result.error}")
-            
-            conn.commit()
-            conn.close()
-            
+
             return {
                 'success': extraction_result.success,
                 'content_length': len(extraction_result.content) if extraction_result.content else 0,

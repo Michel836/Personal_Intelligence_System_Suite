@@ -8,10 +8,8 @@ from datetime import datetime
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor
-import sys
-
-sys.path.append(str(Path(__file__).parent.parent))
 from src.core.database import DatabaseManager
+from .models import FileInfo, FileType, stat_created_at
 from loguru import logger
 
 class TurboScanner:
@@ -20,12 +18,19 @@ class TurboScanner:
     def __init__(self):
         self.db = DatabaseManager()
         self.files_queue = queue.Queue(maxsize=50000)
+        self.volume_id = None
+        self.scan_id = None
         self.stats = {
             'files_found': 0,
             'files_saved': 0,
             'total_size': 0,
             'start_time': time.time()
         }
+
+    def set_scan_context(self, volume_id, scan_id):
+        """Attach the current volume/scan-run so persistence is lifecycle-aware."""
+        self.volume_id = volume_id
+        self.scan_id = scan_id
         
     def fast_directory_walk(self, root_path, file_queue, exclude_dirs=None):
         """Ultra-fast directory walker with minimal I/O."""
@@ -52,7 +57,9 @@ class TurboScanner:
                                 'filename': entry.name,
                                 'size_bytes': stat_info.st_size,
                                 'modified_at': datetime.fromtimestamp(stat_info.st_mtime),
-                                'created_at': datetime.fromtimestamp(stat_info.st_ctime),
+                                'created_at': stat_created_at(stat_info),
+                                'device_id': stat_info.st_dev,
+                                'inode': stat_info.st_ino,
                             }
                             
                             # Add to queue
@@ -89,45 +96,41 @@ class TurboScanner:
             pass
     
     def batch_saver(self, file_queue, batch_size=5000):
-        """Save files in large batches for speed."""
+        """Convert queued entries to FileInfo and save in large batches."""
         batch = []
-        
+
         while True:
             try:
                 # Get file from queue
-                file_info = file_queue.get(timeout=5)
-                
-                if file_info is None:  # Stop signal
+                entry = file_queue.get(timeout=5)
+
+                if entry is None:  # Stop signal
+                    # Flush the final partial batch before exiting.
+                    if batch:
+                        self.save_batch(batch)
+                        batch = []
                     break
-                
-                # Determine basic file type from extension
-                ext = Path(file_info['filename']).suffix.lower()
-                file_type = self.get_file_type(ext)
-                
-                # Create database record
-                record = (
-                    file_info['path'],
-                    file_info['filename'],
-                    ext or None,
-                    file_info['size_bytes'],
-                    file_type,
-                    'normal',  # priority
-                    file_info['created_at'].isoformat(),
-                    file_info['modified_at'].isoformat(),
-                    None,  # metadata
-                    str(Path(file_info['path']).parent),
-                    len(Path(file_info['path']).parts) - 1
-                )
-                
-                batch.append(record)
-                
+
+                ext = Path(entry['filename']).suffix.lower()
+                batch.append(FileInfo(
+                    path=Path(entry['path']),
+                    filename=entry['filename'],
+                    extension=ext,
+                    size_bytes=entry['size_bytes'],
+                    created_at=entry['created_at'],
+                    modified_at=entry['modified_at'],
+                    device_id=entry.get('device_id'),
+                    inode=entry.get('inode'),
+                    file_type=FileType(self.get_file_type(ext)),
+                ))
+
                 # Save when batch is full
                 if len(batch) >= batch_size:
                     self.save_batch(batch)
                     batch = []
-                
+
                 file_queue.task_done()
-                
+
             except queue.Empty:
                 # Save remaining batch
                 if batch:
@@ -135,35 +138,33 @@ class TurboScanner:
                     batch = []
                 continue
     
-    def save_batch(self, batch):
-        """Save a batch of files to database."""
+    def save_batch(self, files):
+        """Persist a batch of FileInfo via the canonical UPSERT contract.
+
+        Delegates to :meth:`DatabaseManager.save_files_batch` so TurboScanner
+        shares exactly the same persistence semantics (metadata refresh,
+        content preservation, checksum/created_at preservation, FTS triggers).
+        """
+        if not files:
+            return
         try:
             with self.db.get_connection() as conn:
-                # Get count before insert
-                cursor_before = conn.execute("SELECT COUNT(*) FROM files")
-                count_before = cursor_before.fetchone()[0]
-                
-                conn.executemany("""
-                    INSERT OR IGNORE INTO files (
-                        path, filename, extension, size_bytes, file_type,
-                        priority, created_at, modified_at, metadata,
-                        parent_dir, depth
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, batch)
-                conn.commit()
-                
-                # Get count after insert to see actual new files
-                cursor_after = conn.execute("SELECT COUNT(*) FROM files")
-                count_after = cursor_after.fetchone()[0]
-                
-                new_files = count_after - count_before
-                self.stats['files_saved'] += new_files
-                self.stats['files_processed'] = self.stats.get('files_processed', 0) + len(batch)
-                
-                if self.stats['files_processed'] % 50000 == 0:
-                    elapsed = time.time() - self.stats['start_time']
-                    print(f"PROCESSED {self.stats['files_processed']:,} files | NEW: {self.stats['files_saved']:,} | TIME: {elapsed:.1f}s")
-                    
+                count_before = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+
+            self.db.save_files_batch(
+                files, volume_id=self.volume_id, scan_id=self.scan_id
+            )
+
+            with self.db.get_connection() as conn:
+                count_after = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+
+            self.stats['files_saved'] += count_after - count_before
+            self.stats['files_processed'] = self.stats.get('files_processed', 0) + len(files)
+
+            if self.stats['files_processed'] % 50000 == 0:
+                elapsed = time.time() - self.stats['start_time']
+                print(f"PROCESSED {self.stats['files_processed']:,} files | NEW: {self.stats['files_saved']:,} | TIME: {elapsed:.1f}s")
+
         except Exception as e:
             logger.error(f"Batch save error: {e}")
     
@@ -260,7 +261,6 @@ if __name__ == "__main__":
     print("- D:\\Data")
     
     # Auto-start with Documents folder for faster demo
-    import os
     username = os.getenv('USERNAME', 'User')
     docs_path = f"C:\\Users\\{username}\\Documents"
     

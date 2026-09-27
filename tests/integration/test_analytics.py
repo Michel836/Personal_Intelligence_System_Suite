@@ -2,12 +2,9 @@
 """
 Test du dashboard analytics pour le système 36TB Intelligence
 """
-import sys
-import os
 from pathlib import Path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from analytics.dashboard import AnalyticsDashboard
+from src.analytics.dashboard import AnalyticsDashboard
 
 def test_analytics():
     """Test le système d'analytics."""

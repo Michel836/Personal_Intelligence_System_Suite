@@ -21,8 +21,9 @@ except ImportError:
 class AdvancedAI:
     """Advanced AI system for document analysis and summaries."""
     
-    def __init__(self, db_path: str = "data/indexes/files.db", ollama_url: str = "http://localhost:11434"):
-        self.db_path = db_path
+    def __init__(self, db_path=None, ollama_url: str = "http://localhost:11434"):
+        from ..core.database import default_db_path
+        self.db_path = db_path or default_db_path()
         self.ollama_url = ollama_url
         self.model = "llama3.2:latest"
         self._init_ai_tables()
@@ -92,49 +93,44 @@ class AdvancedAI:
             logger.error(f"Error initializing AI tables: {e}")
     
     def is_ollama_available(self) -> bool:
-        """Check if Ollama is running and accessible."""
-        if not REQUESTS_AVAILABLE:
-            return False
-        
+        """Whether a chat LLM provider is available (local Ollama or remote)."""
         try:
-            response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
-            return response.status_code == 200
-        except:
+            from .providers.service import get_ai_service
+
+            service = get_ai_service()
+            if service.llm(content_level="text").is_available():
+                return True
+            return service.llm(content_level="metadata").is_available()
+        except Exception:  # noqa: BLE001
             return False
-    
+
     def _make_ollama_request(self, prompt: str, system_prompt: Optional[str] = None, max_tokens: int = 1000) -> Optional[str]:
-        """Make a request to Ollama API."""
-        if not self.is_ollama_available():
-            return None
-        
+        """Run a chat completion through the configured provider (local or remote)."""
+        from .providers.base import AIProviderError
+        from .providers.service import get_ai_service
+
         try:
+            service = get_ai_service()
+            policy = service.config.content_policy
+            llm = service.llm(content_level="text")
+            if llm.remote and not policy.allows_extracted_text:
+                llm = service.llm(content_level="metadata")
+            if not llm.is_available():
+                return None
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
-            
-            payload = {
-                "model": self.model,
-                "messages": messages,
-                "stream": False,
-                "options": {
-                    "num_predict": max_tokens,
-                    "temperature": 0.1,
-                    "top_p": 0.9
-                }
-            }
-            
-            response = requests.post(f"{self.ollama_url}/api/chat", json=payload, timeout=60)
-            
-            if response.status_code == 200:
-                result = response.json()
-                return result.get("message", {}).get("content", "").strip()
-            else:
-                logger.warning(f"Ollama request failed: {response.status_code}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error making Ollama request: {e}")
+            result = llm.chat(messages, options={
+                "num_predict": max_tokens, "temperature": 0.1, "top_p": 0.9,
+            })
+            text = (result.text or "").strip()
+            return text or None
+        except AIProviderError as exc:
+            logger.warning(f"AI provider request failed: {exc}")
+            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Error making AI request: {exc}")
             return None
     
     # Document Summarization

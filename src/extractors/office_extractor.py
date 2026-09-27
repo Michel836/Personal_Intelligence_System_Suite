@@ -4,7 +4,6 @@ import time
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Set
 
 from loguru import logger
 from .base import BaseExtractor, ExtractionResult

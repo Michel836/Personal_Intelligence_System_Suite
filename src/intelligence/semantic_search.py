@@ -1,25 +1,26 @@
 """Semantic search engine using embeddings."""
 
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from pathlib import Path
-import json
-from functools import lru_cache
+import hashlib
+import os
 from cachetools import LRUCache
 import threading
 
 from loguru import logger
 from ..core.database import DatabaseManager
-from ..core.validation import validate_semantic_search_params, SemanticSearchParams, ValidationError
-from .embeddings import EmbeddingGenerator
+from ..core.perf_config import get_resource_config
+from ..core.validation import validate_semantic_search_params, ValidationError
+from .embeddings import EmbeddingGenerator, EmbeddingGenerationError
 
 
 class SemanticSearchEngine:
     """Semantic search engine for intelligent document retrieval."""
     
-    def __init__(self, db: Optional[DatabaseManager] = None):
+    def __init__(self, db: Optional[DatabaseManager] = None, embedding_gen=None):
         self.db = db or DatabaseManager()
-        self.embedding_gen = EmbeddingGenerator()
+        self.embedding_gen = embedding_gen if embedding_gen is not None else self._resolve_embedding_generator()
         
         # LRU cache for embeddings (max 10,000 embeddings ~ 1GB memory)
         self.embeddings_cache = LRUCache(maxsize=10000)
@@ -28,9 +29,173 @@ class SemanticSearchEngine:
         # Query cache for search results (max 1000 queries ~ 100MB)
         self.query_cache = LRUCache(maxsize=1000)
         self.query_cache_lock = threading.Lock()
-        
+
+        # Persistent pre-normalized embedding matrix (M009I.1).
+        self._store = None
+        # Serialises refresh + store reads so concurrent semantic queries and
+        # concurrent extraction/refresh cannot observe a half-updated matrix.
+        self._store_lock = threading.RLock()
+
         logger.info(f"SemanticSearchEngine initialized. Embeddings available: {self.embedding_gen.is_available()}")
-    
+
+    @staticmethod
+    def _resolve_embedding_generator():
+        """Return the configured embedding generator.
+
+        The proven local ``EmbeddingGenerator`` is used unless the router selects
+        a *remote* embedding provider (PIS_AI_MODE/PIS_EMBEDDING_BACKEND +
+        PIS_API_* + a policy that permits extracted text). This keeps the local
+        store namespace and behaviour unchanged by default.
+        """
+        try:
+            from ..ai.providers.service import get_ai_service
+
+            override = get_ai_service().remote_embedding_generator()
+            if override is not None:
+                return override
+        except Exception as exc:  # noqa: BLE001 - degrade to the local path
+            logger.debug(f"AI service unavailable, using local embeddings: {exc}")
+        return EmbeddingGenerator()
+
+    def _get_store(self) -> Any:
+        """Return the persistent matrix store for the active embedding model."""
+        from .embedding_store import EmbeddingMatrixStore
+
+        key = getattr(self.embedding_gen, "model_key", type(self.embedding_gen).__name__)
+        name = getattr(self.embedding_gen, "model_name", key)
+        dim = int(getattr(self.embedding_gen, "embedding_dim", 0) or 0)
+        base = os.environ.get("PIS_EMBEDDING_STORE_DIR")
+        if self._store is None or self._store.model_key != key or self._store.dim != dim:
+            self._store = EmbeddingMatrixStore(
+                key, name, dim, base_dir=Path(base) if base else None
+            )
+        return self._store
+
+    def _embed_texts(self, texts):
+        if not texts:
+            return []
+        batch_size = int(os.environ.get("PIS_EMBEDDING_BATCH_SIZE", "0")) or get_resource_config().embedding_batch_size
+        return self.embedding_gen.generate_batch_embeddings(
+            texts, batch_size=batch_size, show_progress=False
+        )
+
+    @staticmethod
+    def _content_hash(text: str) -> str:
+        """Stable fingerprint of extracted content (detects changed documents)."""
+        return hashlib.blake2b(text.encode("utf-8", "ignore"), digest_size=16).hexdigest()
+
+    def _apply_prune(self, store, batch_size: int) -> int:
+        """Remove store rows for pruned/missing/content-less documents."""
+        total = 0
+        # Compaction is O(store) per call, so use a larger prune batch to keep
+        # the number of passes small even for large deletions.
+        prune_batch = max(int(batch_size), 4096)
+        while True:
+            ids = self.db.semantic_prune_batch(limit=prune_batch)
+            if not ids:
+                break
+            store.remove(ids)
+            self.db.mark_semantic_pruned(ids)
+            total += len(ids)
+            if len(ids) < prune_batch:
+                break
+        return total
+
+    def _refresh_semantic(self, store, *, model_key: str, dim: int, batch_size: int = 256):
+        """Bring the store up to date with the dirty/prune set only.
+
+        Complexity is O(changed + pruned), not O(corpus): the DB yields only
+        rows whose semantic source changed. Clean marks are written *after* the
+        store write, so a crash mid-refresh leaves rows pending and the next
+        refresh converges (at-least-once, idempotent).
+        """
+        if store.matrix is None and store.meta is None and not store.load():
+            # Missing/corrupt store: every tracked vector must be rebuilt.
+            self.db.reset_semantic_for_rebuild()
+        if self.db.semantic_sweep_due():
+            # Rare O(corpus) reconciliation restores the dirty/prune flags after
+            # scans/archive changes; hot queries stay O(pending).
+            self.db.reconcile_semantic_state()
+        total_pruned = self._apply_prune(store, batch_size)
+        total_embedded = 0
+        while True:
+            dirty = self.db.semantic_dirty_batch(model_key=model_key, dim=dim, limit=batch_size)
+            if not dirty:
+                break
+            versions = []
+            for row in dirty:
+                content = (row.get("content_text") or "").strip()
+                if content:
+                    versions.append((int(row["id"]), content, self._content_hash(content)))
+            if not versions:
+                # Dirty rows without usable content cannot be embedded.
+                self.db.mark_semantic_pruned([int(r["id"]) for r in dirty])
+                total_pruned += len(dirty)
+                continue
+            embeddings = self._embed_texts([c for _, c, _ in versions])
+            ids, matrix, entries = [], [], []
+            for (fid, _content, ver), emb in zip(versions, embeddings, strict=False):
+                if emb is None:
+                    continue
+                ids.append(fid)
+                matrix.append(emb)
+                entries.append((fid, ver))
+            if not entries:
+                # Embedding produced nothing usable for this batch. Do not spin
+                # forever: surface it explicitly and leave rows dirty for retry.
+                logger.error(
+                    "semantic refresh made no progress on %d dirty row(s); aborting this pass",
+                    len(dirty),
+                )
+                break
+            store.append(ids, np.vstack(matrix), hashes=[v for _, v in entries])
+            self.db.mark_semantic_embedded(entries, model_key=model_key, dim=dim)
+            total_embedded += len(entries)
+            if len(dirty) < batch_size:
+                break
+        return total_embedded, total_pruned
+
+    def _refresh_store(self, store, documents):
+        """Low-level explicit-list upsert (benchmarks/legacy callers only).
+
+        Production search uses :meth:`_refresh_semantic`. This path rebuilds or
+        appends for an explicit document list without consulting dirty state.
+        """
+        valid = []
+        id_map = {}
+        hashes = {}
+        for doc in documents:
+            content = (doc.get("content_text") or "").strip()
+            if content:
+                doc_id = int(doc["id"])
+                valid.append((doc_id, content))
+                id_map[doc_id] = doc
+                hashes[doc_id] = self._content_hash(content)
+        if store.matrix is None or store.meta is None:
+            loaded = store.load()
+        else:
+            loaded = True
+        if not loaded:
+            embeddings = self._embed_texts([t for _, t in valid])
+            pairs = [(i, e, hashes[i]) for (i, _), e in zip(valid, embeddings, strict=False) if e is not None]
+            if pairs:
+                store.save([i for i, _, _ in pairs], np.vstack([e for _, e, _ in pairs]),
+                           hashes=[h for _, _, h in pairs])
+            return id_map
+        removed = store.prune(set(id_map))
+        existing = store.hash_map()
+        missing = [(i, t) for i, t in valid if existing.get(i) != hashes[i]]
+        if missing:
+            embeddings = self._embed_texts([t for _, t in missing])
+            pairs = [(i, e, hashes[i]) for (i, _), e in zip(missing, embeddings, strict=False) if e is not None]
+            if pairs:
+                store.append([i for i, _, _ in pairs], np.vstack([e for _, e, _ in pairs]),
+                             hashes=[h for _, _, h in pairs])
+        if removed or missing:
+            with self.query_cache_lock:
+                self.query_cache.clear()
+        return id_map
+
     def is_available(self) -> bool:
         """Check if semantic search is available."""
         return self.embedding_gen.is_available()
@@ -38,6 +203,21 @@ class SemanticSearchEngine:
     def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Alias for semantic_search for compatibility."""
         return self.semantic_search(query, limit)
+
+    def refresh(self, *, batch_size: int = 256) -> dict[str, Any]:
+        """Bring the persistent store up to date with dirty documents.
+
+        Bounded and idempotent; safe to call repeatedly. Returns an aggregate
+        summary (no content). Used by the canonical CLI/API maintenance paths.
+        """
+        store = self._get_store()
+        if not self.is_available():
+            return {"available": False, "embedded": 0, "pruned": 0, "store_count": 0}
+        embedded, pruned = self._refresh_semantic(
+            store, model_key=store.model_key, dim=store.dim, batch_size=int(batch_size))
+        store.load()
+        return {"available": True, "embedded": int(embedded), "pruned": int(pruned),
+                "store_count": int(store.meta.count) if store.meta else 0}
     
     def semantic_search(
         self,
@@ -61,81 +241,58 @@ class SemanticSearchEngine:
         if not self.is_available():
             logger.warning("Semantic search not available - falling back to regular search")
             return self.db.search_files(query=params.query, limit=params.limit)
-        
-        # Create cache key
-        cache_key = (params.query, params.limit, params.similarity_threshold)
-        
-        # Check query cache first
-        with self.query_cache_lock:
-            if cache_key in self.query_cache:
+
+        from ..ai.providers.base import AIProviderError
+
+        # Refresh only changed documents, then serve from the store under a lock
+        # so a concurrent refresh cannot expose a half-updated matrix.
+        with self._store_lock:
+            try:
+                store = self._get_store()
+                self._refresh_semantic(store, model_key=store.model_key, dim=store.dim)
+            except (AIProviderError, EmbeddingGenerationError) as exc:
+                # A provider/embedding failure must degrade to lexical search,
+                # never crash the query. Rows stay dirty and are retried later.
+                logger.warning(f"semantic refresh unavailable ({exc}); using lexical search")
+                return self.db.search_files(query=params.query, limit=params.limit)
+            generation = self.db.semantic_generation()
+            cache_key = (params.query, params.limit, params.similarity_threshold, generation)
+            with self.query_cache_lock:
+                cached = self.query_cache.get(cache_key)
+            if cached is not None:
                 logger.debug(f"Found cached results for query: '{params.query}'")
-                return self.query_cache[cache_key]
-        
-        logger.info(f"Performing semantic search for: '{params.query}'")
-        
-        # Generate query embedding
-        query_embedding = self.embedding_gen.generate_embedding(params.query)
-        if query_embedding is None:
-            logger.error("Failed to generate query embedding")
-            return []
-        
-        # Get all documents with content
-        documents = self._get_documents_with_content(params.limit * 5)  # Get more candidates
-        if not documents:
-            logger.info("No documents with extracted content found")
-            return []
-        
-        # Generate embeddings for documents (if not cached)
-        doc_embeddings = []
-        valid_docs = []
-        
-        for doc in documents:
-            doc_id = doc['id']
-            content = doc.get('content_text', '')
-            
-            if not content.strip():
-                continue
-            
-            # Try to get cached embedding
-            embedding = self._get_cached_embedding(doc_id)
-            
-            if embedding is None:
-                # Generate new embedding
-                embedding = self.embedding_gen.generate_embedding(content)
-                if embedding is not None:
-                    self._cache_embedding(doc_id, embedding)
-            
-            if embedding is not None:
-                doc_embeddings.append(embedding)
-                valid_docs.append(doc)
-        
-        if not doc_embeddings:
-            logger.info("No valid document embeddings found")
-            return []
-        
-        # Find similar documents
-        similar_indices = self.embedding_gen.find_similar(
-            query_embedding, 
-            doc_embeddings, 
-            top_k=params.limit
-        )
-        
-        # Prepare results
-        results = []
-        for idx, similarity in similar_indices:
-            if similarity >= params.similarity_threshold:
-                doc = valid_docs[idx].copy()
-                doc['semantic_similarity'] = similarity
-                doc['search_type'] = 'semantic'
-                results.append(doc)
-        
-        logger.info(f"Found {len(results)} semantically similar documents")
-        
-        # Cache the results
-        with self.query_cache_lock:
-            self.query_cache[cache_key] = results
-        
-        return results
+                return cached
+
+            if store.matrix is None or store.meta is None or not store.meta.ids:
+                logger.info("No valid document embeddings found")
+                return []
+
+            logger.info(f"Performing semantic search for: '{params.query}'")
+            query_embedding = self.embedding_gen.generate_embedding(params.query)
+            if query_embedding is None:
+                logger.error("Failed to generate query embedding")
+                return []
+
+            # Overfetch so rows filtered by threshold/lifecycle cannot shrink
+            # the returned result count below the requested limit.
+            overfetch = max(int(params.limit) * 4, int(params.limit) + 32)
+            ranked = store.search(query_embedding, top_k=overfetch)
+            docs = {int(d["id"]): d for d in self.db.get_documents_by_ids(
+                [doc_id for doc_id, _ in ranked])}
+            results = []
+            for doc_id, similarity in ranked:
+                if len(results) >= params.limit:
+                    break
+                if similarity >= params.similarity_threshold and doc_id in docs:
+                    doc = docs[doc_id].copy()
+                    doc['semantic_similarity'] = similarity
+                    doc['search_type'] = 'semantic'
+                    results.append(doc)
+
+            logger.info(f"Found {len(results)} semantically similar documents")
+            with self.query_cache_lock:
+                self.query_cache[cache_key] = results
+            return results
     
     def hybrid_search(
         self,
@@ -294,18 +451,25 @@ class SemanticSearchEngine:
         
         return results
     
-    def _get_documents_with_content(self, limit: int = 1000) -> List[Dict[str, Any]]:
-        """Get documents that have extracted content."""
+    def _get_documents_with_content(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get documents that have extracted content.
+
+        ``limit=None`` returns the whole corpus (used by semantic search); an
+        explicit limit is still available for bounded callers.
+        """
+        sql = """
+            SELECT * FROM files
+            WHERE content_extracted = 1
+            AND content_text IS NOT NULL
+            AND length(content_text) > 50
+            AND COALESCE(state, 'ACTIVE') = 'ACTIVE'
+            ORDER BY priority DESC, modified_at DESC
+        """
         with self.db.get_connection() as conn:
-            cursor = conn.execute("""
-                SELECT * FROM files
-                WHERE content_extracted = 1 
-                AND content_text IS NOT NULL 
-                AND length(content_text) > 50
-                ORDER BY priority DESC, modified_at DESC
-                LIMIT ?
-            """, (limit,))
-            
+            if limit is None:
+                cursor = conn.execute(sql)
+            else:
+                cursor = conn.execute(sql + " LIMIT ?", (int(limit),))
             return [dict(row) for row in cursor]
     
     def _get_document_by_id(self, doc_id: int) -> Optional[Dict[str, Any]]:

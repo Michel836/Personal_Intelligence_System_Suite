@@ -1,0 +1,142 @@
+{
+  "schema": "m013-corpus-manifest/v1",
+  "root_order": [
+    {
+      "order": 1,
+      "label": "desktop_primary",
+      "root": "/home/chu/Desktop",
+      "eligible_physical_files": 273757,
+      "eligible_bytes": 839632843502,
+      "canonical_archives": 7095,
+      "canonical_archive_bytes": 85638138446,
+      "key_format_counts": {
+        "pdf": 4127,
+        "office": 1868,
+        "email": 194,
+        "text": 41902,
+        "code": 25320,
+        "image": 87549,
+        "archive": 8208
+      },
+      "rationale": "Primary real corpus; includes the M010 reference subtrees; largest format/archive diversity."
+    },
+    {
+      "order": 2,
+      "label": "user_projects",
+      "root": "/home/chu/Projects",
+      "eligible_physical_files": 16603,
+      "eligible_bytes": 359212925,
+      "canonical_archives": 16,
+      "canonical_archive_bytes": 276854,
+      "key_format_counts": {
+        "pdf": 4,
+        "office": 0,
+        "email": 0,
+        "text": 9734,
+        "code": 4484,
+        "image": 7,
+        "archive": 25
+      },
+      "rationale": "Source/benchmark projects (read-only) for code/text diversity."
+    },
+    {
+      "order": 3,
+      "label": "downloads",
+      "root": "/home/chu/T\u00e9l\u00e9chargements",
+      "eligible_physical_files": 12035,
+      "eligible_bytes": 158057068330,
+      "canonical_archives": 6,
+      "canonical_archive_bytes": 3028538171,
+      "key_format_counts": {
+        "pdf": 31,
+        "office": 25,
+        "email": 1,
+        "text": 7,
+        "code": 0,
+        "image": 11243,
+        "archive": 25
+      },
+      "rationale": "Live user downloads; image/video/archive breadth."
+    },
+    {
+      "order": 4,
+      "label": "zotero",
+      "root": "/home/chu/Zotero",
+      "eligible_physical_files": 766,
+      "eligible_bytes": 13667752,
+      "canonical_archives": 0,
+      "canonical_archive_bytes": 0,
+      "key_format_counts": {
+        "pdf": 0,
+        "office": 0,
+        "email": 0,
+        "text": 1,
+        "code": 748,
+        "image": 1,
+        "archive": 0
+      },
+      "rationale": "Reference-manager data (text/code/pdf)."
+    },
+    {
+      "order": 5,
+      "label": "documents",
+      "root": "/home/chu/Documents",
+      "eligible_physical_files": 354,
+      "eligible_bytes": 15163213564,
+      "canonical_archives": 7,
+      "canonical_archive_bytes": 1614272522,
+      "key_format_counts": {
+        "pdf": 46,
+        "office": 39,
+        "email": 0,
+        "text": 66,
+        "code": 22,
+        "image": 84,
+        "archive": 9
+      },
+      "rationale": "Current user documents (pdf/office)."
+    },
+    {
+      "order": 6,
+      "label": "calibre",
+      "root": "/home/chu/Calibre Library",
+      "eligible_physical_files": 47,
+      "eligible_bytes": 8643918,
+      "canonical_archives": 0,
+      "canonical_archive_bytes": 0,
+      "key_format_counts": {
+        "pdf": 1,
+        "office": 16,
+        "email": 0,
+        "text": 1,
+        "code": 0,
+        "image": 4,
+        "archive": 0
+      },
+      "rationale": "E-book library (office/epub)."
+    }
+  ],
+  "exclusions_policy": "production FastScannerEngine skip dirs/extensions (mirrored in scripts/bench/m013_preflight.py)",
+  "notes": [
+    "Aggregate counts only; no individual filenames are recorded.",
+    "All selected roots are on the single internal volume /dev/nvme0n1p2 (no external mount dependency).",
+    "Dropbox was rejected: 661 of its files are an exact relpath+size mirror of a Desktop subtree.",
+    "Android/Tools/Applications/Sauvegardes/LucasChessR rejected as vendor/app/backup noise.",
+    "External SSD Windows profile rejected as system/AppData-cache noise (curated doc subset deferred)."
+  ],
+  "totals": {
+    "eligible_physical_files": 303562,
+    "eligible_bytes": 1013234649991,
+    "canonical_archives": 7124,
+    "canonical_archive_bytes": 90281225993,
+    "key_format_counts": {
+      "pdf": 4209,
+      "office": 1948,
+      "email": 195,
+      "text": 51711,
+      "code": 30574,
+      "image": 98888,
+      "archive": 8267
+    }
+  }
+}

@@ -2,13 +2,10 @@
 """
 Test d'extraction de contenu pour le système 36TB Intelligence
 """
-import sys
-import os
 from pathlib import Path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from extractors.manager import ExtractionManager
-from core.database import DatabaseManager
+from src.extractors.manager import ExtractionManager
+from src.core.database import DatabaseManager
 
 def test_extraction():
     """Test l'extraction de contenu."""

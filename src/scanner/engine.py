@@ -15,7 +15,16 @@ from datetime import datetime
 from loguru import logger
 from ..core.simple_config import settings
 from ..core.logging import log_performance
-from .models import FileInfo, FileType, Priority, ScanProgress, ScanStats
+from .models import (
+    FileInfo,
+    FileType,
+    Priority,
+    ScanProgress,
+    ScanStats,
+    HASH_LIMIT,
+    METADATA_INDEX_LIMIT,
+    stat_created_at,
+)
 
 
 class ScannerEngine:
@@ -68,20 +77,26 @@ class ScannerEngine:
         include_system: bool = False,
         progress_callback: Optional[Callable[[ScanProgress], None]] = None
     ) -> Iterator[FileInfo]:
-        """Scan multiple paths with progress tracking."""
-        
+        """Scan multiple paths with progress tracking.
+
+        ``limit`` is global across all roots. ``None`` or any value ``<= 0``
+        means "unlimited".
+        """
+
+        effective_limit = limit if (limit is not None and limit > 0) else None
+
         logger.info(f"Starting scan of {len(paths)} paths")
         self._reset_progress()
         self.is_running = True
         
         try:
             # First pass: count total files for progress
-            if limit:
-                logger.info(f"Quick count (limit: {limit:,})")
+            if effective_limit:
+                logger.info(f"Quick count (limit: {effective_limit:,})")
             else:
                 logger.info("Counting total files...")
                 
-            total_files = self._count_files(paths, limit, include_system)
+            total_files = self._count_files(paths, effective_limit, include_system)
             self.progress.total_files = total_files
             logger.info(f"Found {total_files:,} files to scan")
             
@@ -94,7 +109,7 @@ class ScannerEngine:
                 
                 for path in paths:
                     for file_path in self._walk_directory(path, include_system):
-                        if limit and scanned_count >= limit:
+                        if effective_limit and scanned_count >= effective_limit:
                             break
                             
                         if self._should_skip_file(file_path):
@@ -103,6 +118,7 @@ class ScannerEngine:
                         
                         future = executor.submit(self._scan_file, file_path)
                         futures[future] = file_path
+                        scanned_count += 1
                         
                         # Improved batch processing with dynamic sizing
                         max_futures = min(self.max_workers * 4, 100)  # Better scaling
@@ -192,15 +208,16 @@ class ScannerEngine:
         if file_path.name.startswith('.'):
             return True
         
-        # Skip by size (unified limit: 1GB)
-        try:
-            size_bytes = file_path.stat().st_size
-            if size_bytes > 1024 * 1024 * 1024:  # 1GB limit
-                logger.debug(f"Skipping large file: {file_path} ({size_bytes / (1024**3):.2f}GB)")
+        # Metadata is indexed for every size by default; only an explicit
+        # METADATA_INDEX_LIMIT would hide files.
+        if METADATA_INDEX_LIMIT is not None:
+            try:
+                if file_path.stat().st_size > METADATA_INDEX_LIMIT:
+                    logger.debug(f"Skipping file over metadata limit: {file_path}")
+                    return True
+            except OSError:
                 return True
-        except OSError:
-            return True
-        
+
         return False
     
     def _is_system_path(self, path: Path) -> bool:
@@ -225,10 +242,12 @@ class ScannerEngine:
                 path=file_path,
                 filename=file_path.name,
                 size_bytes=stat_info.st_size,
-                created_at=datetime.fromtimestamp(stat_info.st_ctime),
+                created_at=stat_created_at(stat_info),
                 modified_at=datetime.fromtimestamp(stat_info.st_mtime),
                 accessed_at=datetime.fromtimestamp(stat_info.st_atime),
                 extension=file_path.suffix.lower(),
+                device_id=stat_info.st_dev,
+                inode=stat_info.st_ino,
             )
             
             # MIME type detection
@@ -247,8 +266,8 @@ class ScannerEngine:
             # Priority assignment
             file_info.priority = self._determine_priority(file_info)
             
-            # Content hash (for small files only, with memory protection)
-            if file_info.size_bytes < 50 * 1024 * 1024:  # < 50MB (reasonable limit)
+            # Content hash (separate HASH_LIMIT; metadata is always indexed)
+            if file_info.size_bytes < HASH_LIMIT:
                 file_info.checksum = self._calculate_checksum_safe(file_path, file_info.size_bytes)
             
             # Detect special characteristics
@@ -324,12 +343,12 @@ class ScannerEngine:
         
         try:
             # Additional safety check
-            if file_size > 50 * 1024 * 1024:  # 50MB
+            if file_size > HASH_LIMIT:
                 return ""
             
             hash_md5 = hashlib.md5()
             bytes_read = 0
-            max_bytes = 50 * 1024 * 1024  # Hard limit
+            max_bytes = HASH_LIMIT  # Hard limit
             
             with open(file_path, "rb") as f:
                 while bytes_read < max_bytes:

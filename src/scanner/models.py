@@ -6,6 +6,22 @@ from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 from enum import Enum
 
+# Size policy. These thresholds are deliberately independent so that metadata
+# visibility is never sacrificed for expensive hashing/extraction.
+METADATA_INDEX_LIMIT: Optional[int] = None  # index metadata for any size
+HASH_LIMIT = 50 * 1024 * 1024               # 50 MiB
+EXTRACTION_LIMIT = 50 * 1024 * 1024         # 50 MiB
+
+
+def stat_created_at(stat_result: Any) -> Optional[datetime]:
+    """Return a real creation time, or ``None`` when unavailable.
+
+    On Linux ``st_ctime`` is the inode *change* time (updated by chmod/rename),
+    not creation/birth time, so it must never be reported as ``created_at``.
+    """
+    birth = getattr(stat_result, "st_birthtime", None)
+    return datetime.fromtimestamp(birth) if birth else None
+
 
 class FileType(str, Enum):
     """File type enumeration."""
@@ -33,9 +49,13 @@ class FileInfo(BaseModel):
     path: Path
     filename: str
     size_bytes: int
-    created_at: datetime
+    created_at: Optional[datetime] = None
     modified_at: datetime
     accessed_at: Optional[datetime] = None
+
+    # Filesystem identity (for rename/move association within a volume)
+    device_id: Optional[int] = None
+    inode: Optional[int] = None
     
     # File characteristics
     extension: str
@@ -72,6 +92,13 @@ class FileInfo(BaseModel):
     def age_days(self) -> int:
         """File age in days."""
         return (datetime.now() - self.modified_at).days
+
+    @property
+    def identity_key(self) -> Optional[tuple[int, int]]:
+        """``(device_id, inode)`` when both are known, else ``None``."""
+        if self.device_id is None or self.inode is None:
+            return None
+        return (self.device_id, self.inode)
 
 
 class ScanProgress(BaseModel):

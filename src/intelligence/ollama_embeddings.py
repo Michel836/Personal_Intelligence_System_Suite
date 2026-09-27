@@ -1,5 +1,6 @@
 """Ollama embeddings for semantic search."""
 
+import os
 import numpy as np
 import time
 from pathlib import Path
@@ -19,12 +20,16 @@ except ImportError:
 class OllamaEmbeddingGenerator:
     """Generate embeddings using Ollama models."""
     
-    def __init__(self, model_name: str = "nomic-embed-text:latest"):
-        self.model_name = model_name
+    def __init__(self, model_name: Optional[str] = None):
+        from ..core.ai_config import model_for
+        self.model_name = model_name or model_for("embedding")
         self.embedding_dim = None
         
-        # Cache for embeddings
-        self.cache_dir = Path("data/cache/ollama_embeddings")
+        # Cache path is overridable so trials/tests stay out of the repo tree.
+        cache_base = os.environ.get("PIS_EMBEDDING_CACHE_DIR")
+        self.cache_dir = (
+            (Path(cache_base) if cache_base else Path("data/cache")) / "ollama_embeddings"
+        ) / self.model_name.replace("/", "_")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         if OLLAMA_AVAILABLE:

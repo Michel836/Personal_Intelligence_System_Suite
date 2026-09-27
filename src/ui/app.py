@@ -3,6 +3,7 @@
 import streamlit as st
 import pandas as pd
 from pathlib import Path
+import os
 import time
 from datetime import datetime
 import sys
@@ -16,17 +17,21 @@ from typing import Dict, Any, List, Optional
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
 from src.core.database import DatabaseManager
+from src.core.launch_profile import (
+    Capability,
+    capabilities_for,
+    current_profile,
+)
+from src.core.scan_service import ScanService
 from src.scanner.fast_engine import FastScannerEngine
 from src.scanner.models import FileType, Priority
-from src.intelligence.semantic_search import SemanticSearchEngine
-from src.intelligence.chat_engine import ChatEngine
 from src.analytics.dashboard import AnalyticsDashboard
-from src.extractors.auto_extractor import AutoExtractor
 from src.search.advanced_search import AdvancedSearch
 from src.tags.tag_manager import TagManager
 from src.cloud.sync_manager import CloudSyncManager
-from src.ai.advanced_ai import AdvancedAI
-from src.visualizations.advanced_viz import AdvancedVisualizations
+
+# Heavy components (torch/sentence-transformers/plotly) are imported lazily by
+# their accessors below so a LITE/SMART/FULL startup never pays for them.
 
 # Import disk selection components
 from src.ui.disk_selector import DiskSelector
@@ -59,6 +64,8 @@ st.set_page_config(
 # Initialize session state
 if 'db' not in st.session_state:
     st.session_state.db = DatabaseManager()
+    # A previous process may have died mid-scan; never let that run reconcile.
+    st.session_state.db.recover_stale_runs()
 if 'scanner_type' not in st.session_state:
     st.session_state.scanner_type = "FastScannerEngine"
 if 'scanner' not in st.session_state:
@@ -67,10 +74,6 @@ if 'scanner' not in st.session_state:
         st.session_state.scanner = ScannerEngine()
     else:
         st.session_state.scanner = FastScannerEngine()
-if 'semantic_search' not in st.session_state:
-    st.session_state.semantic_search = SemanticSearchEngine()
-if 'chat_engine' not in st.session_state:
-    st.session_state.chat_engine = ChatEngine()
 if 'scan_running' not in st.session_state:
     st.session_state.scan_running = False
 if 'advanced_search' not in st.session_state:
@@ -79,10 +82,6 @@ if 'tag_manager' not in st.session_state:
     st.session_state.tag_manager = TagManager()
 if 'cloud_sync' not in st.session_state:
     st.session_state.cloud_sync = CloudSyncManager()
-if 'advanced_ai' not in st.session_state:
-    st.session_state.advanced_ai = AdvancedAI()
-if 'advanced_viz' not in st.session_state:
-    st.session_state.advanced_viz = AdvancedVisualizations()
 if 'disk_selector' not in st.session_state:
     st.session_state.disk_selector = DiskSelector()
 if 'scan_controller' not in st.session_state:
@@ -91,6 +90,85 @@ if 'scan_thread' not in st.session_state:
     st.session_state.scan_thread = None
 if 'progress_queue' not in st.session_state:
     st.session_state.progress_queue = queue.Queue()
+
+
+# ---------------------------------------------------------------------------
+# Lazy, profile-dependent components (M012-B2)
+# ---------------------------------------------------------------------------
+# These are created on first *use* rather than at startup.  Constructing them
+# eagerly pulled torch/sentence-transformers into every process (~1 GB RSS, ~3 s
+# import) even for LITE, which must stay lightweight and offline-capable.
+
+def get_semantic_search():
+    """Return the semantic search engine, building it on first use."""
+    if 'semantic_search' not in st.session_state:
+        from src.intelligence.semantic_search import SemanticSearchEngine
+
+        st.session_state.semantic_search = SemanticSearchEngine()
+    return st.session_state.semantic_search
+
+
+def get_chat_engine():
+    """Return the chat engine, building it on first use."""
+    if 'chat_engine' not in st.session_state:
+        from src.intelligence.chat_engine import ChatEngine
+
+        st.session_state.chat_engine = ChatEngine()
+    return st.session_state.chat_engine
+
+
+def get_advanced_ai():
+    """Return the advanced AI helper, building it on first use."""
+    if 'advanced_ai' not in st.session_state:
+        from src.ai.advanced_ai import AdvancedAI
+
+        st.session_state.advanced_ai = AdvancedAI()
+    return st.session_state.advanced_ai
+
+
+class _AIEngineStatus:
+    """Cheap sidebar AI-online probe (never loads an embedding model)."""
+
+    def is_available(self) -> bool:
+        try:
+            from src.ai.providers.service import get_ai_service
+
+            info = get_ai_service().llm().model_info()
+            return bool(info.provider and info.provider != "unavailable")
+        except Exception:  # noqa: BLE001 - the indicator must never break the UI
+            return False
+
+
+# Capability-gated navigation.  Core pages (scan/search/viewer/tags/dashboard/
+# statistics/settings) are exposed by every profile; advanced pages depend on
+# the launch profile and can be toggled with PIS_FEATURE_<CAPABILITY>.
+_NAVIGATION: list[tuple[str, Capability]] = [
+    ("🚀 Scanner", Capability.SCAN),
+    ("🔍 Search", Capability.SEARCH),
+    ("🎯 Advanced Search", Capability.ADVANCED_SEARCH),
+    ("🧬 Duplicates & Versions", Capability.DUPLICATES),
+    ("🧠 Document Intelligence", Capability.INTELLIGENCE),
+    ("🧭 Timeline & Graph", Capability.GRAPH),
+    ("🌌 Galaxy & Topics", Capability.GALAXY),
+    ("🛠️ Ingestion & Coverage", Capability.INGESTION),
+    ("📁 Dossiers & Reports", Capability.REPORTS),
+    ("🧰 Operations & System", Capability.OPERATIONS),
+    ("🧠 AI Search", Capability.SEMANTIC_SEARCH),
+    ("💬 AI Chat", Capability.AI_CHAT),
+    ("🏷️ Tags & Favorites", Capability.TAGS),
+    ("📊 Dashboard", Capability.DASHBOARD),
+    ("📈 Statistics", Capability.STATISTICS),
+    ("🌌 Visualizations", Capability.VISUALIZATIONS),
+    ("👁️ File Viewer", Capability.VIEWER),
+    ("🔄 Auto-Extract", Capability.AUTO_EXTRACT),
+    ("🤖 Advanced AI", Capability.ADVANCED_AI),
+    ("☁️ Cloud Sync", Capability.CLOUD_SYNC),
+]
+
+
+def _navigation_pages() -> list[str]:
+    caps = capabilities_for(current_profile())
+    return [label for label, capability in _NAVIGATION if capability in caps]
 
 
 def main():
@@ -105,6 +183,13 @@ def main():
     # Header
     st.title("🔍 36TB Intelligence")
     st.markdown("**Personal Knowledge Operating System** - Search your entire digital life")
+
+    profile = current_profile()
+    st.caption(
+        f"Launch profile: **{profile.value.upper()}** · "
+        f"AI mode: {os.environ.get('PIS_AI_MODE', 'auto')} · "
+        f"remote content: {os.environ.get('PIS_REMOTE_CONTENT_POLICY', 'never')}"
+    )
     
     # Sidebar
     with st.sidebar:
@@ -113,14 +198,26 @@ def main():
         
         st.markdown("---")
         
-        # Original Activity Monitor (keep for compatibility)
+        # Original Activity Monitor (keep for compatibility). AI status uses a
+        # cheap probe so the sidebar never constructs the chat engine.
         render_activity_monitor(
             st.session_state.db,
             st.session_state.scanner,
-            st.session_state.chat_engine,
+            _AIEngineStatus(),
             st.session_state.tag_manager
         )
         
+        st.markdown("---")
+
+        # Compact AI/profile status. Rendered "cheap" so it never loads a local
+        # embedding model just to show backend state (M012-B2).
+        try:
+            from src.ui.ai_status import render_ai_status
+
+            render_ai_status()
+        except Exception as exc:  # noqa: BLE001 - status must never break the UI
+            st.caption(f"AI status unavailable: {exc}")
+
         st.markdown("---")
         st.header("⚙️ Options")
         
@@ -144,8 +241,8 @@ def main():
         st.markdown("---")
         
         page = st.radio(
-            "Navigation", 
-            ["🚀 Scanner", "🔍 Search", "🎯 Advanced Search", "🧠 AI Search", "💬 AI Chat", "🏷️ Tags & Favorites", "📊 Dashboard", "📈 Statistics", "🌌 Visualizations", "👁️ File Viewer", "🔄 Auto-Extract", "🤖 Advanced AI", "☁️ Cloud Sync"]
+            "Navigation",
+            _navigation_pages(),
         )
     
     # Check for redirect to statistics
@@ -163,6 +260,34 @@ def main():
     elif page == "🎯 Advanced Search":
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Advanced Search page"):
             advanced_search_page()
+    elif page == "🧬 Duplicates & Versions":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Duplicates & Versions page"):
+            from src.ui.dedup_page import render as render_dedup_page
+            render_dedup_page()
+    elif page == "🧠 Document Intelligence":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Document Intelligence page"):
+            from src.ui.intel_page import render as render_intel_page
+            render_intel_page()
+    elif page == "🧭 Timeline & Graph":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Timeline & Graph page"):
+            from src.ui.graph_page import render as render_graph_page
+            render_graph_page()
+    elif page == "🌌 Galaxy & Topics":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Galaxy & Topics page"):
+            from src.ui.galaxy_page import render as render_galaxy_page
+            render_galaxy_page()
+    elif page == "🛠️ Ingestion & Coverage":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Ingestion & Coverage page"):
+            from src.ui.ingest_page import render as render_ingest_page
+            render_ingest_page()
+    elif page == "📁 Dossiers & Reports":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Dossiers & Reports page"):
+            from src.ui.reports_page import render as render_reports_page
+            render_reports_page()
+    elif page == "🧰 Operations & System":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Operations & System page"):
+            from src.ui.operations_page import render as render_operations_page
+            render_operations_page()
     elif page == "🏷️ Tags & Favorites":
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Tags & Favorites page"):
             tags_favorites_page()
@@ -240,6 +365,11 @@ def search_page():
             min_size = st.number_input("Min Size (MB)", 0, 10000, 0)
         with col6:
             max_size = st.number_input("Max Size (MB) - 0 = No limit", 0, 10000, 0)
+        include_missing = st.checkbox(
+            "Show missing files (recovery)",
+            value=False,
+            help="Include files absent from a completed scan (state=MISSING)",
+        )
     
     # Always show some results (browse mode)
     show_results = search_button or query or True  # Always show results
@@ -254,7 +384,8 @@ def search_page():
                 extension=extension if extension else None,
                 min_size=min_size * 1024 * 1024 if min_size > 0 else None,
                 max_size=max_size * 1024 * 1024 if max_size > 0 else None,
-                limit=max_results
+                limit=max_results,
+                include_missing=include_missing,
             )
         
         # Display results with interactive table
@@ -302,6 +433,16 @@ def search_page():
                         # Show analysis of selected files
                         st.session_state['show_selection_analysis'] = True
                 
+                st.markdown("---")
+                st.subheader("📁 Dossier")
+                try:
+                    from src.ui.reports_page import add_to_dossier_widget
+                    add_to_dossier_widget(st.session_state.db,
+                                          [int(i['id']) for i in selected_items],
+                                          key_prefix="search_results")
+                except Exception as exc:  # noqa: BLE001 - optional action
+                    st.caption(f"Dossier action unavailable: {type(exc).__name__}")
+
                 # Bulk tagging modal
                 if st.session_state.get('show_bulk_tagging', False):
                     with st.form("bulk_tagging"):
@@ -837,7 +978,7 @@ def advanced_ai_page():
     st.markdown("*Intelligent document analysis with summaries and Q&A*")
     
     # Check AI availability
-    if not st.session_state.advanced_ai.is_ollama_available():
+    if not get_advanced_ai().is_ollama_available():
         st.error("""
         🚨 **Ollama not available**
         
@@ -879,7 +1020,7 @@ def advanced_ai_page():
                 
                 if st.button("🤖 Generate Batch Summaries", type="primary"):
                     with st.spinner("Generating AI summaries..."):
-                        results = st.session_state.advanced_ai.batch_generate_summaries(
+                        results = get_advanced_ai().batch_generate_summaries(
                             limit=batch_limit, 
                             file_types=file_types if file_types else None
                         )
@@ -896,7 +1037,7 @@ def advanced_ai_page():
         
         with col2:
             # AI Stats preview
-            ai_stats = st.session_state.advanced_ai.get_stats()
+            ai_stats = get_advanced_ai().get_stats()
             st.metric("Total Summaries", ai_stats.get('total_summaries', 0))
             st.metric("Pending Files", ai_stats.get('files_without_summaries', 0))
             st.metric("Avg Confidence", f"{ai_stats.get('avg_summary_confidence', 0):.1f}")
@@ -905,7 +1046,7 @@ def advanced_ai_page():
         st.subheader("📋 Recent Summaries")
         
         try:
-            conn = sqlite3.connect(st.session_state.advanced_ai.db_path)
+            conn = sqlite3.connect(get_advanced_ai().db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
@@ -964,7 +1105,7 @@ def advanced_ai_page():
             if st.button("🤖 Ask AI", type="primary", disabled=not question.strip()):
                 if question.strip():
                     with st.spinner("AI is analyzing your documents..."):
-                        response = st.session_state.advanced_ai.ask_question(question.strip())
+                        response = get_advanced_ai().ask_question(question.strip())
                     
                     if response['success']:
                         st.success("✅ Answer generated!")
@@ -983,7 +1124,7 @@ def advanced_ai_page():
         # Q&A History
         st.subheader("📜 Recent Questions")
         
-        qa_history = st.session_state.advanced_ai.get_qa_history(10)
+        qa_history = get_advanced_ai().get_qa_history(10)
         
         if qa_history:
             for qa in qa_history:
@@ -1576,7 +1717,7 @@ def ai_search_page():
     st.header("🧠 AI-Powered Search")
     
     # Check if semantic search is available
-    if not st.session_state.semantic_search.is_available():
+    if not get_semantic_search().is_available():
         st.error("""
         🚨 **Semantic search not available**
         
@@ -1632,11 +1773,11 @@ def ai_search_page():
         with st.spinner("🧠 AI is analyzing your request..."):
             try:
                 if search_type == "🧠 Semantic":
-                    results = st.session_state.semantic_search.semantic_search(
+                    results = get_semantic_search().semantic_search(
                         query, limit=limit, similarity_threshold=similarity_threshold
                     )
                 elif search_type == "🔄 Hybrid":
-                    results = st.session_state.semantic_search.hybrid_search(
+                    results = get_semantic_search().hybrid_search(
                         query, limit=limit, semantic_weight=semantic_weight
                     )
                 else:  # Similar docs - need a document ID
@@ -1690,7 +1831,7 @@ def ai_search_page():
                     # Similar documents button
                     if st.button(f"🔍 Find Similar", key=f"similar_{i}"):
                         with st.spinner("Finding similar documents..."):
-                            similar_docs = st.session_state.semantic_search.find_similar_documents(
+                            similar_docs = get_semantic_search().find_similar_documents(
                                 result['id'], limit=5
                             )
                             if similar_docs:
@@ -1706,7 +1847,7 @@ def ai_search_page():
     
     # Show AI search stats
     if st.checkbox("📊 Show AI Search Statistics"):
-        stats = st.session_state.semantic_search.get_stats()
+        stats = get_semantic_search().get_stats()
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -1795,7 +1936,7 @@ def ai_chat_page():
             return
     
     # Check availability
-    if not st.session_state.chat_engine.is_available():
+    if not get_chat_engine().is_available():
         st.error("""
         🚨 **Conversational AI not available**
         
@@ -1813,7 +1954,7 @@ def ai_chat_page():
         return
     
     # Chat stats
-    chat_stats = st.session_state.chat_engine.get_stats()
+    chat_stats = get_chat_engine().get_stats()
     st.success(f"🚀 AI Assistant ready! Using {chat_stats.get('model', 'Unknown model')}")
     
     # Chat interface
@@ -1823,7 +1964,7 @@ def ai_chat_page():
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
         if st.button("🗑️ Clear Chat"):
-            st.session_state.chat_engine.clear_conversation()
+            get_chat_engine().clear_conversation()
             st.success("Conversation cleared!")
             st.rerun()
     
@@ -1831,7 +1972,7 @@ def ai_chat_page():
         search_context = st.checkbox("🔍 Search Context", True, help="Include relevant documents in conversation")
     
     # Chat history display
-    history = st.session_state.chat_engine.get_conversation_history()
+    history = get_chat_engine().get_conversation_history()
     
     if history:
         st.subheader("📝 Chat History")
@@ -1895,7 +2036,7 @@ def ai_chat_page():
         with st.spinner("🤖 AI is thinking..."):
             try:
                 # Get AI response
-                response_data = st.session_state.chat_engine.chat(
+                response_data = get_chat_engine().chat(
                     user_message, 
                     search_context=search_context
                 )
@@ -1976,7 +2117,7 @@ def ai_chat_page():
                 if doc_question.strip():
                     with st.spinner("🔍 Analyzing document..."):
                         try:
-                            doc_response = st.session_state.chat_engine.ask_about_document(
+                            doc_response = get_chat_engine().ask_about_document(
                                 selected_doc_id, 
                                 doc_question
                             )
@@ -2010,7 +2151,7 @@ def ai_chat_page():
     if st.button("📊 Generate Summary"):
         with st.spinner("🤖 Generating collection summary..."):
             try:
-                summary_response = st.session_state.chat_engine.summarize_documents(
+                summary_response = get_chat_engine().summarize_documents(
                     file_type=file_type_filter if file_type_filter != "all" else None,
                     limit=summary_limit
                 )
@@ -2215,6 +2356,7 @@ def background_scan_worker(paths, max_files, file_limit_mb, include_system, prog
         # Import here to avoid issues with Streamlit session state in threads
         from src.scanner.fast_engine import FastScannerEngine
         from src.core.database import DatabaseManager
+        from src.core.scan_service import ScanService
         from src.utils.disk_utils import validate_scan_path
         import time
         from datetime import datetime
@@ -2222,6 +2364,7 @@ def background_scan_worker(paths, max_files, file_limit_mb, include_system, prog
         # Create new instances for the thread (can't share session state across threads)
         scanner = FastScannerEngine()
         db = DatabaseManager()
+        service = ScanService(db)
         
         total_files_scanned = 0
         total_estimated_files = sum(validation['estimated_files'] for validation in 
@@ -2284,24 +2427,25 @@ def background_scan_worker(paths, max_files, file_limit_mb, include_system, prog
             files_per_drive = max_files
             file_size_limit = file_limit_mb * 1024 * 1024 if file_limit_mb > 0 else None
             
-            # Scan files
-            files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
-            
-            if files:
+            # Scan files through the canonical lifecycle.
+            session = service.session(path)
+            try:
+                files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
+
                 # Apply file size filter
                 filtered_files = []
                 for file_info in files:
                     if file_size_limit and file_info.size_bytes > file_size_limit:
                         continue
                     filtered_files.append(file_info)
-                
-                # Save to database with batch method for better performance
-                if hasattr(db, 'save_files_batch'):
-                    saved_count = db.save_files_batch(filtered_files)
-                else:
-                    saved_count = db.save_files(filtered_files)
-                    
-                total_files_scanned += len(filtered_files)
+
+                if filtered_files:
+                    session.record(filtered_files)
+                    total_files_scanned += len(filtered_files)
+                session.complete()
+            except Exception as scan_error:
+                session.fail(str(scan_error))
+                raise
                 
                 # Check if we've reached the global file limit
                 if max_files and total_files_scanned >= max_files:
@@ -2507,6 +2651,7 @@ def _start_advanced_scan(paths, max_files, file_limit_mb, threads):
         st.session_state.scan_running = True
         
         for i, path in enumerate(paths):
+            session = None
             # Update scan controller current path
             progress_data['current_path'] = str(path)
             scan_controller.update_progress(progress_data)
@@ -2544,28 +2689,28 @@ def _start_advanced_scan(paths, max_files, file_limit_mb, threads):
                     scan_controller.update_progress(update_data)
                 
                 # Use scan_paths instead of fast_scan for better progress tracking
+                session = ScanService(st.session_state.db).session(path)
                 files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
-                
-                if files:
-                    # Apply file size filter
-                    filtered_files = []
-                    for file_info in files:
-                        if file_size_limit and file_info.size_bytes > file_size_limit:
-                            continue
-                        filtered_files.append(file_info)
-                    
-                    # Save to database
-                    if filtered_files:
-                        st.session_state.db.save_files_batch(filtered_files)
-                        total_files_scanned += len(filtered_files)
-                        
-                        # Update progress
-                        progress_data['files_processed'] = total_files_scanned
-                        progress_data['progress'] = min(1.0, total_files_scanned / max(total_estimated_files or 1, 1))
-                        scan_controller.update_progress(progress_data)
-                    
+
+                # Apply file size filter
+                filtered_files = []
+                for file_info in files:
+                    if file_size_limit and file_info.size_bytes > file_size_limit:
+                        continue
+                    filtered_files.append(file_info)
+
+                if filtered_files:
+                    session.record(filtered_files)
+                    total_files_scanned += len(filtered_files)
+                    progress_data['files_processed'] = total_files_scanned
+                    progress_data['progress'] = min(1.0, total_files_scanned / max(total_estimated_files or 1, 1))
+                    scan_controller.update_progress(progress_data)
+                session.complete()
+
             except Exception as e:
                 # Update error count
+                if session is not None:
+                    session.fail(str(e))
                 progress_data['errors'] = progress_data.get('errors', 0) + 1
                 scan_controller.update_progress(progress_data)
                 st.error(f"Erreur lors du scan de {path}: {str(e)}")
@@ -2634,6 +2779,42 @@ def statistics_page():
             for k, v in stats['by_priority'].items()
         ])
         st.dataframe(df, use_container_width=True)
+
+
+def _render_archive_details(result: dict) -> None:
+    """Archive-aware detail block for a search/result row (M009J.17)."""
+    try:
+        kind = result.get("document_kind")
+        if kind == "ARCHIVE_MEMBER":
+            st.caption("📦 Archive member")
+            st.caption(f"Member path: {result.get('archive_member_path', '?')}")
+            st.caption(f"Extraction: {result.get('extraction_state', '?')}")
+            db = st.session_state.get("db")
+            if db is not None:
+                from src.archives.viewer import member_detail
+
+                detail = member_detail(db, result.get("id"))
+                if detail:
+                    st.caption(f"Parent archive: {detail['parent_name']}")
+                    if detail["preview"]:
+                        st.text_area(
+                            "Content preview (bounded)", detail["preview"],
+                            height=140, key=f"arc_prev_{result.get('id')}",
+                        )
+        elif result.get("file_type") == "archive":
+            db = st.session_state.get("db")
+            if db is not None:
+                from src.archives.viewer import container_summary
+
+                summary = container_summary(db, result.get("id"))
+                if summary:
+                    st.caption(
+                        f"📦 {summary['format']} · {summary['member_count']} members · "
+                        f"{summary['compressed_human']} → {summary['expanded_human']} · "
+                        f"status {summary['status']}"
+                    )
+    except Exception:  # noqa: BLE001 - viewer enrichment must never break the page
+        pass
 
 
 def file_viewer_page():
@@ -2720,12 +2901,14 @@ def file_viewer_page():
                             st.session_state['selected_file_data'] = result
                         
                         if st.button(f"📂 Open Location", key=f"db_location_{i}"):
-                            try:
-                                import subprocess
-                                subprocess.run(f'explorer /select,"{result["path"]}"', shell=True)
+                            from src.utils.os_open import reveal_path
+
+                            if reveal_path(result["path"]):
                                 st.success("Opening location...")
-                            except Exception as e:
-                                st.error(f"Could not open: {e}")
+                            else:
+                                st.error("Could not open file location")
+
+                    _render_archive_details(result)
     
     st.markdown("---")
     
@@ -2848,8 +3031,10 @@ def show_file_preview(result: dict, index: int) -> None:
         if file_path.exists():
             if st.button(f"📂 Open File", key=f"open_{index}"):
                 try:
-                    import os
-                    os.startfile(str(file_path))
+                    from src.utils.os_open import open_path
+
+                    if not open_path(file_path):
+                        raise RuntimeError("no file opener available")
                     st.success("Opening file...")
                 except Exception as e:
                     st.error(f"Could not open file: {e}")
@@ -2997,7 +3182,9 @@ def auto_extract_page():
     st.header("🔄 Auto Content Extraction")
     st.markdown("### Extract text content from documents for semantic search")
     
-    # Initialize auto extractor
+    # Initialize auto extractor (lazy import: extraction deps are optional)
+    from src.extractors.auto_extractor import AutoExtractor
+
     auto_extractor = AutoExtractor()
     
     # Get candidates count
@@ -3229,13 +3416,13 @@ def auto_extract_page():
 
 
 def open_file_location(file_path: Path):
-    """Open file location in Windows Explorer."""
-    try:
-        import subprocess
-        subprocess.run(f'explorer /select,"{file_path}"', shell=True)
+    """Reveal a file in the OS file manager (cross-platform)."""
+    from src.utils.os_open import reveal_path
+
+    if reveal_path(file_path):
         st.success("Opening folder...")
-    except Exception as e:
-        st.error(f"Could not open folder: {e}")
+    else:
+        st.error("Could not open folder")
 
 
 def manage_file_tags(file_id: int, filename: str):

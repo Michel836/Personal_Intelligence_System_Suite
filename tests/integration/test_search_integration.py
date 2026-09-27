@@ -53,42 +53,34 @@ def db_manager(temp_db):
 
 
 @pytest.fixture
-def populated_db(db_manager, test_files_dir):
-    """Database populated with test data."""
-    # Create test file entries
+def populated_db(db_manager, test_files_dir, file_info_factory):
+    """Database populated with metadata only (content is added by extraction)."""
+    # Build schema-valid FileInfo objects (required timestamps supplied).
     test_files = [
-        FileInfo(
-            path=test_files_dir / "test_document.txt",
-            filename="test_document.txt",
-            extension=".txt",
+        file_info_factory(
+            test_files_dir / "test_document.txt",
             size_bytes=100,
             file_type=FileType.DOCUMENT,
             priority=Priority.HIGH,
-            content_text="This is a test document about artificial intelligence and machine learning."
         ),
-        FileInfo(
-            path=test_files_dir / "subdir" / "nested_file.doc", 
-            filename="nested_file.doc",
-            extension=".doc",
+        file_info_factory(
+            test_files_dir / "subdir" / "nested_file.doc",
             size_bytes=150,
             file_type=FileType.DOCUMENT,
             priority=Priority.MEDIUM,
-            content_text="Nested document with important information about databases and search engines."
         ),
-        FileInfo(
-            path=test_files_dir / "image.jpg",
-            filename="image.jpg", 
-            extension=".jpg",
+        file_info_factory(
+            test_files_dir / "image.jpg",
             size_bytes=50000,
             file_type=FileType.IMAGE,
-            priority=Priority.LOW
-        )
+            priority=Priority.LOW,
+        ),
     ]
-    
-    # Insert test data
+
+    # Insert test metadata
     for file_info in test_files:
         db_manager.save_file(file_info)
-    
+
     return db_manager
 
 
@@ -134,44 +126,67 @@ class TestDatabaseIntegration:
         assert len(results) == 1  # Only the image file
     
     def test_content_search(self, populated_db):
-        """Test full-text search functionality."""
-        # Search for content keywords
-        results = populated_db.search_files(query="artificial intelligence")
-        assert len(results) >= 1
-        
-        results = populated_db.search_files(query="databases")
-        assert len(results) >= 1
+        """Content becomes searchable only after extraction updates it."""
+        # Metadata is available immediately after scan/save...
+        all_rows = populated_db.search_files()
+        assert len(all_rows) == 3
+        assert all(row["content_text"] is None for row in all_rows)
+
+        # ...but content search finds nothing until extraction runs.
+        assert populated_db.search_files(query="artificial intelligence") == []
+        assert populated_db.search_files(query="databases") == []
+
+        # Run the real content pipeline step: save -> update_content.
+        txt_doc = populated_db.search_files(query="test_document")[0]
+        nested_doc = populated_db.search_files(query="nested_file")[0]
+        populated_db.update_content(
+            txt_doc["id"],
+            "This is a test document about artificial intelligence and machine learning.",
+        )
+        populated_db.update_content(
+            nested_doc["id"],
+            "Nested document with important information about databases and search engines.",
+        )
+
+        # Content is now searchable through the same metadata rows.
+        assert len(populated_db.search_files(query="artificial intelligence")) >= 1
+        assert len(populated_db.search_files(query="databases")) >= 1
 
 
 class TestScannerIntegration:
     """Test scanner functionality."""
     
     def test_scanner_basic_functionality(self, test_files_dir, temp_db):
-        """Test basic scanning functionality."""
+        """Test the canonical scan -> persist -> search flow."""
         db = DatabaseManager(temp_db)
         scanner = FastScannerEngine()
-        
-        # Scan the test directory
-        stats = scanner.scan_directory(test_files_dir)
-        
-        assert stats.total_files > 0
-        assert stats.scan_duration > 0
-        
-        # Check files were added to database
+
+        # Canonical contract: scan_paths() yields schema-valid FileInfo objects.
+        files = list(scanner.scan_paths([test_files_dir]))
+
+        assert len(files) > 0
+        assert all(isinstance(file_info, FileInfo) for file_info in files)
+        assert all(file_info.modified_at is not None for file_info in files)
+        # ``created_at`` is optional (Linux has no reliable birth time).
+
+        # Persist the yielded metadata, then read it back.
+        db.save_files_batch(files)
         results = db.search_files()
-        assert len(results) > 0
+        assert len(results) == len(files)
     
     def test_scanner_file_type_detection(self, test_files_dir, temp_db):
         """Test file type detection during scanning."""
         db = DatabaseManager(temp_db)
         scanner = FastScannerEngine()
-        
-        scanner.scan_directory(test_files_dir)
-        
-        # Check different file types were detected
+
+        files = list(scanner.scan_paths([test_files_dir]))
+        assert len(files) > 0
+        db.save_files_batch(files)
+
+        # Check different file types were persisted with their classification.
         doc_files = db.search_files(file_type=FileType.DOCUMENT)
         image_files = db.search_files(file_type=FileType.IMAGE)
-        
+
         assert len(doc_files) > 0
         assert len(image_files) > 0
 
@@ -257,19 +272,24 @@ class TestEndToEndWorkflow:
         db = DatabaseManager(temp_db)
         scanner = FastScannerEngine()
         
-        # 1. Scan directory
-        scan_stats = scanner.scan_directory(test_files_dir)
-        assert scan_stats.total_files > 0
-        
-        # 2. Basic search
+        # 1. Scan directory (canonical generator contract).
+        files = list(scanner.scan_paths([test_files_dir]))
+        assert len(files) > 0
+
+        # 2. Persist the scanned metadata.
+        db.save_files_batch(files)
         results = db.search_files()
         assert len(results) > 0
-        
-        # 3. Filtered search
+
+        # 3. Filtered search.
         txt_files = db.search_files(extension=".txt")
         assert len(txt_files) > 0
-        
-        # 4. Content search
+
+        # 4. Content search only works after the extraction step updates content.
+        db.update_content(
+            txt_files[0]["id"],
+            "This is a test document about artificial intelligence and machine learning.",
+        )
         content_results = db.search_files(query="test document")
         assert len(content_results) > 0
     
@@ -326,7 +346,10 @@ class TestPerformanceIntegration:
         import time
         start_time = time.time()
         
-        results = db.search_files(query="testing performance", limit=50)
+        # CONTRACT(M004A): DatabaseManager.search_files matches contiguous LIKE
+        # substrings. Tokenized/multi-word (FTS) semantics are deliberately NOT
+        # covered here and are deferred to M004B.
+        results = db.search_files(query="testing and performance", limit=50)
         
         search_time = time.time() - start_time
         

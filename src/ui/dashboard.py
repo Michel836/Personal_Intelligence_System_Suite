@@ -9,6 +9,7 @@ from pathlib import Path
 
 from src.ui.components import UIComponents, WorkspaceManager, SmartSuggestions
 from src.ui.disk_selector import DiskSelector
+from src.core.scan_service import ScanService
 
 class UnifiedDashboard:
     """Modern unified dashboard with intelligent widgets."""
@@ -271,6 +272,14 @@ class UnifiedDashboard:
     def _render_settings_tab(self):
         """Render settings and preferences tab."""
         st.subheader("⚙️ System Settings")
+
+        # AI backend status: mode, providers, policy. Never shows secrets.
+        try:
+            from src.ui.ai_status import render_ai_status
+
+            render_ai_status()
+        except Exception as exc:  # noqa: BLE001 - status must never break the UI
+            st.caption(f"AI status unavailable: {exc}")
         
         # Workspace management
         st.write("**🏢 Workspace Management**")
@@ -423,24 +432,24 @@ class UnifiedDashboard:
                 # Calculate files per path
                 files_per_path = max_files // len(paths)
                 
-                # Scan this path
+                # Scan this path through the canonical lifecycle
+                session = ScanService(st.session_state.db).session(path)
                 try:
                     files = list(scanner.fast_scan(Path(path), limit=files_per_path))
-                    
+                    filtered_files = self._apply_scan_filters(files, options) if files else []
+
+                    if filtered_files:
+                        session.record(filtered_files)
+                        total_files_scanned += len(filtered_files)
+
+                    session.complete()
                     if files:
-                        # Apply filters
-                        filtered_files = self._apply_scan_filters(files, options)
-                        
-                        # Save to database
-                        if filtered_files:
-                            st.session_state.db.save_files_batch(filtered_files)
-                            total_files_scanned += len(filtered_files)
-                        
                         status_text.text(f"✅ {path}: {len(filtered_files)} files added")
                     else:
                         status_text.text(f"⚠️ {path}: No files found")
-                        
+
                 except Exception as e:
+                    session.fail(str(e))
                     status_text.text(f"❌ {path}: Error - {e}")
                     continue
                 
@@ -513,10 +522,17 @@ class UnifiedDashboard:
         with st.spinner("Starting scan..."):
             try:
                 scanner = st.session_state.scanner
-                files = list(scanner.fast_scan(Path("C:\\"), limit=1000))
-                if files:
-                    st.session_state.db.save_files_batch(files)
-                st.success(f"Scanned {len(files)} files!")
+                scan_root = Path("C:\\")
+                session = ScanService(st.session_state.db).session(scan_root)
+                try:
+                    files = list(scanner.fast_scan(scan_root, limit=1000))
+                    if files:
+                        session.record(files)
+                    session.complete()
+                    st.success(f"Scanned {len(files)} files!")
+                except Exception as scan_error:
+                    session.fail(str(scan_error))
+                    raise
             except Exception as e:
                 st.error(f"Scan failed: {e}")
     

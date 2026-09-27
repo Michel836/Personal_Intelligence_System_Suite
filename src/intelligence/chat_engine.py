@@ -1,6 +1,7 @@
 """Conversational AI engine using Ollama."""
 
 import json
+import os
 import time
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
@@ -20,26 +21,67 @@ from .semantic_search import SemanticSearchEngine
 from .simple_chat_engine import SimpleChatEngine
 
 
+def _ollama_supports_think() -> bool:
+    """Whether the installed ollama client accepts the ``think`` kwarg.
+
+    ``requirements.txt`` pins ``ollama==0.1.7`` (which does not); newer clients
+    do. Passing it unconditionally raises ``TypeError`` and silently disables
+    retrieval-augmented chat, so it must be probed.
+    """
+    if not OLLAMA_AVAILABLE:
+        return False
+    try:
+        import inspect
+
+        return "think" in inspect.signature(ollama.chat).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _llm_num_ctx() -> int:
+    """Context window for chat generation (locked M010 profile: 4096 default)."""
+    try:
+        return max(512, int(os.environ.get("PIS_LLM_NUM_CTX", "4096")))
+    except ValueError:
+        return 4096
+
+
+def _llm_num_predict() -> int:
+    """Maximum generated tokens (bounds latency for large models)."""
+    try:
+        return max(32, int(os.environ.get("PIS_LLM_MAX_TOKENS", "384")))
+    except ValueError:
+        return 384
+
+
 class ChatEngine:
     """Conversational AI engine for document interaction."""
     
     def __init__(
         self,
-        model_name: str = "llama3.2:latest",
+        model_name: Optional[str] = None,
         db: Optional[DatabaseManager] = None
     ):
-        self.model_name = model_name
+        from ..core.ai_config import model_for
+        from ..ai.providers.service import get_ai_service
+
         self.db = db or DatabaseManager()
         self.semantic_search = SemanticSearchEngine(self.db)
-        
+        self._service = get_ai_service()
+        self._model_override = model_name
+        self._llm = self._service.llm(content_level="text", model_override=model_name)
+        info = self._llm.model_info()
+        self.model_name = model_name or info.model or model_for("interactive_chat")
+
         # Conversation history
         self.conversation_history = []
-        
-        # Fallback to simple chat if Ollama not available
-        self.simple_fallback = None
-        if not OLLAMA_AVAILABLE or not self._test_ollama_connection():
-            logger.info("Using SimpleChatEngine as fallback")
-            self.simple_fallback = SimpleChatEngine(self.db)
+
+        # Always keep a deterministic fallback; it is used when no provider is
+        # available or when a configured provider fails at call time (for
+        # example a model that is not installed).
+        self.simple_fallback = SimpleChatEngine(self.db)
+        if not self._llm.is_available():
+            logger.info("No LLM provider available - SimpleChatEngine will answer")
         
         # System prompt
         self.system_prompt = """You are an intelligent assistant for a personal document management system called "36TB Intelligence". 
@@ -61,15 +103,46 @@ Guidelines:
 - Use French when the user speaks French, English otherwise
 """
         
-        if OLLAMA_AVAILABLE:
-            self._check_model_availability()
-        else:
-            logger.error("Ollama not available. Install with: pip install ollama")
-    
     def is_available(self) -> bool:
         """Check if conversational AI is available."""
         # Always return True since we have SimpleChatEngine as fallback
         return True
+
+    def _select_llm_for_content(self):
+        """Pick an LLM provider and whether document body text may be sent.
+
+        Local providers may always receive content. Remote providers receive body
+        text only when the remote-content policy allows it; otherwise a
+        metadata-only remote selection is used (filenames/paths only).
+        """
+        policy = self._service.config.content_policy
+        llm = self._service.llm(content_level="text", model_override=self._model_override)
+        if llm.is_available() and not (llm.remote and not policy.allows_extracted_text):
+            return llm, True
+        return self._service.llm(content_level="metadata", model_override=self._model_override), False
+
+    def get_model_status(self) -> Dict[str, Any]:
+        """Compact provider status for the UI/diagnostics (never exposes keys)."""
+        try:
+            status = self._service.status()
+            llm = status.get("llm", {})
+            cfg = status.get("config", {})
+            return {
+                # Back-compat keys used by the dashboard.
+                "available": bool(llm.get("available")),
+                "current_model": llm.get("model"),
+                # Rich diagnostics.
+                "provider": llm.get("provider"),
+                "remote": llm.get("remote"),
+                "mode": cfg.get("mode"),
+                "content_policy": cfg.get("content_policy"),
+                "hardware_tier": status.get("hardware_tier"),
+                "embeddings": status.get("embeddings"),
+                "config": cfg,
+                "usage": status.get("usage"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"available": False, "current_model": None, "error": str(exc)}
     
     def _test_ollama_connection(self) -> bool:
         """Test if Ollama is actually accessible."""
@@ -89,7 +162,15 @@ Guidelines:
         try:
             # Get models with timeout handling
             models = ollama.list()
-            available_models = [model.model for model in models.models]
+            raw = models.get("models", []) if isinstance(models, dict) else getattr(models, "models", [])
+            available_models = []
+            for model in raw:
+                if isinstance(model, dict):
+                    name = model.get("model") or model.get("name")
+                else:
+                    name = getattr(model, "model", None) or getattr(model, "name", None)
+                if name:
+                    available_models.append(name)
             
             if self.model_name in available_models:
                 logger.info(f"Model {self.model_name} is available")
@@ -112,42 +193,47 @@ Guidelines:
             return False
     
     @safe_ai_operation
-    @timeout_operation(45.0)  # 45 second timeout for chat operations
+    @timeout_operation(float(os.environ.get("PIS_LLM_CHAT_TIMEOUT", "90")))  # large local models need headroom
     def chat(self, user_message: str, search_context: bool = True) -> Dict[str, Any]:
         """Have a conversation with the AI about documents."""
-        
-        # Use simple fallback if Ollama not available
-        if self.simple_fallback:
-            return self.simple_fallback.chat(user_message, search_context)
         
         start_time = time.time()
         
         try:
+            llm, include_content = self._select_llm_for_content()
+            if not llm.is_available():
+                if self.simple_fallback:
+                    return self.simple_fallback.chat(user_message, search_context)
+                return {
+                    "response": "No AI provider is available for the current mode and policy.",
+                    "error": "provider_unavailable",
+                    "sources": [],
+                }
+
             # Search for relevant documents if requested
             context_documents = []
             if search_context:
                 context_documents = self._search_relevant_documents(user_message)
-            
-            # Build conversation context
-            conversation_context = self._build_context(user_message, context_documents)
-            
-            # Generate AI response with timeout
-            response = ollama.chat(
-                model=self.model_name,
-                messages=[
-                    {"role": "system", "content": self.system_prompt},
-                    *self.conversation_history,
-                    {"role": "user", "content": conversation_context}
-                ],
-                options={
-                    "temperature": 0.7,
-                    "top_p": 0.9,
-                    "max_tokens": 1000,
-                    "timeout": 30.0  # 30 second timeout
-                }
+
+            # Build conversation context. Body text is only included when the
+            # selected provider is allowed to receive it (local always; remote
+            # only per the remote-content policy).
+            conversation_context = self._build_context(
+                user_message, context_documents, include_content=include_content
             )
-            
-            ai_response = response['message']['content']
+
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                *self.conversation_history,
+                {"role": "user", "content": conversation_context},
+            ]
+            result = llm.chat(messages, options={
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "num_predict": _llm_num_predict(),
+                "num_ctx": _llm_num_ctx(),
+            })
+            ai_response = result.text
             
             # Update conversation history
             self.conversation_history.append({"role": "user", "content": user_message})
@@ -163,16 +249,21 @@ Guidelines:
                 "response": ai_response,
                 "sources": context_documents,
                 "response_time": response_time,
-                "model": self.model_name,
+                "model": result.model,
+                "provider": result.provider,
                 "context_used": len(context_documents) > 0
             }
         
         except Exception as e:
             logger.error(f"Error in chat: {e}")
+            # Provider failure (e.g. missing model, outage): degrade to the
+            # deterministic fallback rather than surfacing a provider error.
+            if self.simple_fallback is not None:
+                return self.simple_fallback.chat(user_message, search_context)
             return {
-                "response": f"Sorry, I encountered an error: {str(e)}",
-                "error": str(e),
-                "sources": []
+                "response": "The AI provider is currently unavailable.",
+                "error": "provider_unavailable",
+                "sources": [],
             }
     
     def _search_relevant_documents(
@@ -205,9 +296,15 @@ Guidelines:
     def _build_context(
         self, 
         user_message: str, 
-        documents: List[Dict[str, Any]]
+        documents: List[Dict[str, Any]],
+        include_content: bool = True,
     ) -> str:
-        """Build context for the AI including relevant documents."""
+        """Build context for the AI including relevant documents.
+
+        ``include_content`` gates extracted body text: when False (e.g. a
+        remote provider under a metadata-only policy) only filenames/paths and
+        metadata are included.
+        """
         
         context = f"User question: {user_message}\n\n"
         
@@ -221,7 +318,7 @@ Guidelines:
                 context += f"- Type: {doc.get('file_type', 'unknown')}\n"
                 context += f"- Size: {doc.get('size_bytes', 0) / (1024*1024):.2f} MB\n"
                 
-                if doc.get('content_text'):
+                if include_content and doc.get('content_text'):
                     # Include a relevant excerpt
                     content = doc['content_text']
                     if len(content) > 500:
