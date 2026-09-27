@@ -168,20 +168,23 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 
 | ID | README feature | Layer | Current module | Status | Tests | Gap | Priority | Milestone | Action |
 |---|---|---|---|---|---|---|---|---|---|
-| I1 | FastAPI REST | B | — | PNI | no | README self-notes "not implemented" | P2 | M019 | IMPLEMENT |
-| I2 | WebSockets | B | — | PNI | no | — | P3 | M019 | OPTIONAL |
-| I3 | CLI (`36tb-intel`) | B | — | PNI | no | README self-notes "not implemented" | P2 | M019 | IMPLEMENT |
-| I4 | Scripts (scan/extract/index/maintenance) | A | `scripts/*` | IMPLEMENTED (ad hoc) | partial | duplicated helpers | P1 | CURRENT | IMPROVE |
+| I1 | REST API | B | `src/api` (Starlette ASGI; loopback-only, `/api/v1`) | IMPLEMENTED (M019) | yes | FastAPI not required; no auth/TLS (out of scope) | P2 | M019 | DONE |
+| I2 | WebSockets | B | — | PNI | no | not needed for the mono-user pull model | P3 | M019 | DROP |
+| I3 | CLI (`pis`) | B | `src/cli.py` + `[project.scripts]` | IMPLEMENTED (M019) | yes | maps to canonical services; `--json` | P2 | M019 | DONE |
+| I4 | Scripts (scan/extract/index/maintenance) | A | `scripts/*` | IMPLEMENTED (ad hoc) | partial | superseded by `pis`; scripts kept | P1 | CURRENT | KEEP |
 | I5 | MCP | B | `mcp_server.py` | IMPLEMENTED | yes | read-only only | P1 | CURRENT | KEEP |
-| I6 | Automation/scheduling | C | — | PNI | no | — | P3 | M019 | OPTIONAL |
-| I7 | Backup/restore/export | A | `cloud/sync_manager.py` | IMPLEMENTED | partial | Dropbox-centric | P1 | CURRENT | IMPROVE |
-| I8 | Maintenance (optimize/clean) | B | scripts + Postgres vacuum | PARTIAL | no | SQLite VACUUM/optimize not exposed | P2 | M019 | COMPLETE |
+| I6 | Automation/scheduling | C | — | PNI | no | deliberate (no daemon/cron) | P3 | M019 | DROP |
+| I7 | Backup/restore/export | A | `src/ops/backup.py` (+ `cloud/sync_manager.py`) | IMPLEMENTED (M019) | yes | app-consistent SQLite/semantic backup, staging restore; Dropbox separate | P1 | M019 | DONE |
+| I8 | Maintenance (optimize/clean) | B | `src/ops/maintenance.py` | IMPLEMENTED (M019) | yes | integrity/analyze/optimize/vacuum-precheck/FTS/prune | P2 | M019 | DONE |
+| I9 | Doctor / diagnostics | B | `src/ops/doctor.py` + `src/ops/health.py` | IMPLEMENTED (M019) | yes | OK/WARN/ERROR/NOT_CONFIGURED; no secrets | P2 | M019 | DONE |
+| I10 | Process / instance safety | B | `src/ops/instance.py` + launcher `--single-instance` | IMPLEMENTED (M019) | yes | PID lock, stale recovery, read-only duplicate detection | P2 | M019 | DONE |
+| I11 | Schema versioning / migrations | B | `src/ops/schema.py` (`PRAGMA user_version`) | IMPLEMENTED (M019) | yes | additive only; no silent drops | P2 | M019 | DONE |
 
 ### Data / storage / performance
 
 | ID | README item | Layer | Current | Status | Priority | Milestone | Action |
 |---|---|---|---|---|---|---|---|
-| D1 | PostgreSQL 15 + pgvector | B | `core/postgres_database.py` (non-canonical) | OTC (optional scale backend) | P2 | M013/M019 | OPTIONAL |
+| D1 | PostgreSQL 15 + pgvector | B | `core/postgres_database.py` (dead: SQLAlchemy absent) + `src/ops/pgvector.py` | OPTIONAL (decided) | P2 | M013/M019 | KEEP_CURRENT |
 | D2 | SQLite + FTS5 | A | `core/database.py` | IAI | P0 | CURRENT | KEEP |
 | D3 | Embedding matrix store | B | `intelligence/embedding_store.py` | IAI | P0 | CURRENT | KEEP |
 | D4 | Redis | B | — | OTC | P3 | DROP | DROP |
@@ -235,8 +238,9 @@ reranking depends on semantic search + provider abstraction
 - **M018**: reports (8 kinds) + HTML/PDF export + manifests + citations/
   provenance, static/dynamic dossiers, evidence-pack reconstruction, and
   privacy-aware export modes (all local, no fabricated citations).
-- **M019**: opt-in local REST/CLI, maintenance/backup consolidation, optional
-  Postgres/pgvector scale backend.
+- **M019**: opt-in loopback REST API, canonical `pis` CLI, doctor, bounded
+  maintenance, app-consistent backup/restore, process-instance safety, and an
+  evidence-based optional pgvector decision (KEEP_CURRENT — no server).
 - **M020**: advanced visualization (galaxy), clustering/topic modeling,
   contextual intelligence surface.
 
