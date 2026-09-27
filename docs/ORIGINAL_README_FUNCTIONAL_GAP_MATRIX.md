@@ -141,9 +141,14 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | V13 | Archive-aware viewer | B | `archives/viewer.py` + UI | IMPLEMENTED | yes | yes | — | P1 | CURRENT | KEEP |
 | V14 | Tags | A | `tags/tag_manager.py` | IMPLEMENTED | partial | partial | — | P1 | CURRENT | KEEP |
 | V15 | Favorites | A | `tag_manager` favorites | IMPLEMENTED | partial | partial | — | P1 | CURRENT | KEEP |
-| V16 | Reports | B | `analytics.export_stats` (JSON) | PARTIAL | partial | partial | no PDF | P2 | M018 | COMPLETE |
-| V17 | PDF report export | B | — | PNI | no | no | — | P2 | M018 | IMPLEMENT |
-| V18 | Dossier reconstruction | C | — | PNI | no | no | — | P3 | M018 | IMPLEMENT |
+| V16 | Reports | B | `reports.builders` (8 kinds) + `analytics.export_stats` | IMPLEMENTED (M018) | yes | yes | canonical IR, reuses search/dedup/graph/intel/ingest | P2 | M018 | DONE |
+| V17 | PDF report export | B | `reports.pdf_export` (weasyprint→libreoffice→chrome) | IMPLEMENTED (M018) | yes | yes | local provider chain; HTML/JSON always produced; recorded provider | P2 | M018 | DONE |
+| V18 | Dossier reconstruction | C | `reports.dossiers` + `reports.reconstruction` | IMPLEMENTED (M018) | yes | yes | STATIC/DYNAMIC, snapshot/compare, evidence-based, manual wins | P3 | M018 | DONE |
+| V19 | HTML report export | B | `reports.html_export` | IMPLEMENTED (M018) | yes | yes | standalone, inline CSS, no remote assets, escaped | P2 | M018 | DONE |
+| V20 | Source citations / provenance | B | `reports.citations` + `reports.provenance` | IMPLEMENTED (M018) | yes | yes | `[D12]`/`[D12:p3]`; KNOWN/DERIVED/INFERRED/UNAVAILABLE; no invented pages | P2 | M018 | DONE |
+| V21 | Export manifest / reproducibility | B | `reports.export` + `reports.models.ReportManifest` | IMPLEMENTED (M018) | yes | yes | logical fingerprint; byte-identical PDF not claimed | P2 | M018 | DONE |
+| V22 | Privacy-aware export modes | B | `reports.privacy` | IMPLEMENTED (M018) | yes | yes | FULL_LOCAL/MASK_PII/OMIT_HIGH_SENSITIVITY/PATH_REDACTED/METADATA_ONLY; preview | P2 | M018 | DONE |
+| V23 | Dossiers & Reports UI | A | `ui.reports_page` + search/graph actions | IMPLEMENTED (M018) | yes | yes | create/build/preview/export/history; no destructive source action | P2 | M018 | DONE |
 
 ### Privacy / security
 
@@ -227,7 +232,9 @@ reranking depends on semantic search + provider abstraction
   detection, encryption-at-rest, audit trail.
 - **M016**: timeline, relationship graph, prioritization policy.
 - **M017**: PST/email, legacy office, OCR hardening, extraction error queue.
-- **M018**: reports/PDF export, dossier reconstruction.
+- **M018**: reports (8 kinds) + HTML/PDF export + manifests + citations/
+  provenance, static/dynamic dossiers, evidence-pack reconstruction, and
+  privacy-aware export modes (all local, no fabricated citations).
 - **M019**: opt-in local REST/CLI, maintenance/backup consolidation, optional
   Postgres/pgvector scale backend.
 - **M020**: advanced visualization (galaxy), clustering/topic modeling,
