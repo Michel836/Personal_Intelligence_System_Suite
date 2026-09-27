@@ -75,9 +75,6 @@ class ScanController:
     
     def _check_progress_updates(self):
         """Check for progress updates from background scan thread and auto-refresh."""
-        import streamlit as st
-        import time
-        
         if 'progress_queue' in st.session_state:
             # Process all available updates
             updates_received = 0

@@ -261,7 +261,6 @@ if __name__ == "__main__":
     print("- D:\\Data")
     
     # Auto-start with Documents folder for faster demo
-    import os
     username = os.getenv('USERNAME', 'User')
     docs_path = f"C:\\Users\\{username}\\Documents"
     

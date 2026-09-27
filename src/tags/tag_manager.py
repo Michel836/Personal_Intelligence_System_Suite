@@ -3,8 +3,7 @@
 import sqlite3
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Set
-import json
+from typing import List, Dict, Any, Optional
 
 from loguru import logger
 

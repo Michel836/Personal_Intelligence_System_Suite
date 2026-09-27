@@ -1,10 +1,7 @@
 """Optimized fast scanner engine."""
 
-import hashlib
-import time
 from pathlib import Path
 from typing import Iterator, Optional, Callable
-from collections import Counter
 from datetime import datetime
 import os
 
@@ -14,7 +11,6 @@ from .models import (
     FileType,
     Priority,
     ScanProgress,
-    ScanStats,
     METADATA_INDEX_LIMIT,
     stat_created_at,
 )

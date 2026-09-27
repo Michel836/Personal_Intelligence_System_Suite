@@ -2,7 +2,6 @@
 
 import time
 from pathlib import Path
-from typing import Set
 
 from loguru import logger
 from .base import BaseExtractor, ExtractionResult

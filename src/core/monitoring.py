@@ -3,11 +3,10 @@
 import time
 import threading
 import psutil
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Callable
 from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict, deque
-import json
 
 from loguru import logger
 
@@ -392,7 +391,7 @@ def timed_operation(metric_name: str = None):
             try:
                 result = func(*args, **kwargs)
                 success = True
-            except Exception as e:
+            except Exception:
                 metrics_collector.record_error()
                 success = False
                 raise

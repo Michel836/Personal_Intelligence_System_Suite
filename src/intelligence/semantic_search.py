@@ -1,19 +1,17 @@
 """Semantic search engine using embeddings."""
 
 import numpy as np
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 import hashlib
-import json
 import os
-from functools import lru_cache
 from cachetools import LRUCache
 import threading
 
 from loguru import logger
 from ..core.database import DatabaseManager
 from ..core.perf_config import get_resource_config
-from ..core.validation import validate_semantic_search_params, SemanticSearchParams, ValidationError
+from ..core.validation import validate_semantic_search_params, ValidationError
 from .embeddings import EmbeddingGenerator, EmbeddingGenerationError
 
 
