@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from src.ai.providers.policy import RemoteContentPolicy
 from src.ai.providers.router import (
-    FallbackLLMProvider,
     HardwareTier,
     RoutingPolicy,
     hardware_tier,
@@ -147,3 +146,13 @@ def test_fallback_chain_tries_each_provider_once():
     with pytest.raises(AIProviderError):
         llm.chat([{"role": "user", "content": "hi"}])
     assert failing_remote.calls == 1 and failing_local.calls == 1  # no infinite fallback loop
+
+
+def test_explicit_model_override_reaches_provider():
+    local = FakeLLM("ollama", "default-model", remote=False)
+    router = make_router(make_config(mode="local"), llm_providers={"ollama": local},
+                         emb_providers={"sentence_transformers": LOCAL_EMB},
+                         hardware_profile=profile(gpu="RTX 3090", vram=24))
+    llm = router.llm(model_override="explicit-model")
+    assert llm.model == "explicit-model"
+    assert local.model == "explicit-model"

@@ -148,3 +148,18 @@ def test_cpu_only_no_providers_keeps_core_functional(tmp_path, monkeypatch):
             "VALUES (1, '/c/doc.txt', 'doc.txt', 10, '2026-01-01', 'ACTIVE', 'PHYSICAL_FILE')")
         conn.commit()
     assert len(db.search_files("doc")) == 1
+
+
+def test_chat_engine_provider_error_falls_back_to_simple(tmp_path, monkeypatch):
+    # A selected provider that fails at call time (e.g. model not installed)
+    # must degrade to the deterministic fallback, not surface a provider error.
+    monkeypatch.setattr(ss, "EmbeddingGenerator", _NullEmbeddings)
+    failing = FakeLLM("ollama", "missing-model", remote=False, fail=True)
+    svc = _service(make_config(mode="local"), {"ollama": failing},
+                   {"sentence_transformers": LOCAL_EMB})
+    monkeypatch.setattr("src.ai.providers.service.get_ai_service", lambda *a, **k: svc)
+    engine = ChatEngine(db=DatabaseManager(tmp_path / "err.db"))
+    out = engine.chat("question", search_context=False)
+    assert out.get("response")
+    assert out.get("error") != "provider_unavailable" or out.get("response")
+    assert failing.calls == 1
