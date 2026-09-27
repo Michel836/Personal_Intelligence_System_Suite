@@ -94,6 +94,7 @@ class Capability(str, Enum):
     VISUALIZATIONS = "visualizations"
     CLOUD_SYNC = "cloud_sync"
     AUTO_EXTRACT = "auto_extract"
+    GALAXY = "galaxy"
 
 
 CORE_CAPABILITIES: frozenset[Capability] = frozenset(
@@ -124,6 +125,7 @@ ADVANCED_CAPABILITIES: frozenset[Capability] = frozenset(
         Capability.VISUALIZATIONS,
         Capability.CLOUD_SYNC,
         Capability.AUTO_EXTRACT,
+        Capability.GALAXY,
     }
 )
 

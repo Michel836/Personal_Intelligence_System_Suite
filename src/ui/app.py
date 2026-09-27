@@ -149,6 +149,7 @@ _NAVIGATION: list[tuple[str, Capability]] = [
     ("🧬 Duplicates & Versions", Capability.DUPLICATES),
     ("🧠 Document Intelligence", Capability.INTELLIGENCE),
     ("🧭 Timeline & Graph", Capability.GRAPH),
+    ("🌌 Galaxy & Topics", Capability.GALAXY),
     ("🛠️ Ingestion & Coverage", Capability.INGESTION),
     ("📁 Dossiers & Reports", Capability.REPORTS),
     ("🧰 Operations & System", Capability.OPERATIONS),
@@ -271,6 +272,10 @@ def main():
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Timeline & Graph page"):
             from src.ui.graph_page import render as render_graph_page
             render_graph_page()
+    elif page == "🌌 Galaxy & Topics":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Galaxy & Topics page"):
+            from src.ui.galaxy_page import render as render_galaxy_page
+            render_galaxy_page()
     elif page == "🛠️ Ingestion & Coverage":
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Ingestion & Coverage page"):
             from src.ui.ingest_page import render as render_ingest_page
