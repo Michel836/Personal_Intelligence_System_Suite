@@ -120,7 +120,8 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | A17b | Document prioritization / importance | B | `graph.priority` (transparent weighted signals) | IMPLEMENTED (M016) | yes | yes | user signals dominate; PII is a filter; no opaque AI | P2 | M016 | DONE |
 | A18 | Agentic behavior | C | — (MCP tools only) | PNI | no | no | — | P3 | BACKLOG | DROP |
 | A19 | MCP server | B | `mcp_server.py` | IMPLEMENTED | yes | partial | 3 read-only tools | P2 | CURRENT | KEEP |
-| A20 | Contextual intelligence / recommendations | A | `ui/intelligence.py` | PARTIAL | no | no | heuristic; not wired to a page | P2 | M020 | IMPROVE |
+| A20 | Contextual intelligence / recommendations | A | `galaxy.service.GalaxyService.document_context` + `ui/galaxy_page.py` | IMPLEMENTED (M020) | yes | yes | canonical cluster/topic/semantic/versions/entities/timeline/dossier/priority signals; no duplicated relationship logic; no opaque AI | P2 | M020 | DONE |
+| A21 | Clustering / topic modelling | B | `galaxy.clustering` + `galaxy.topics` | IMPLEMENTED (M020) | yes | yes | MiniBatchKMeans/NumPy fallback, c-TF-IDF deterministic labels, evidence-backed, bounded | P2 | M020 | DONE |
 
 ### Visualization / UX
 
@@ -131,7 +132,10 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | V3 | Charts (Plotly) | A | `visualizations/advanced_viz.py` | IMPLEMENTED | partial | yes | — | P1 | CURRENT | KEEP |
 | V4 | Timeline | B | `graph.timeline.TimelineService` | IMPLEMENTED (M016) | yes | yes | provenance-aware date sources, filters, day/week/month/year grouping | P2 | M016 | DONE |
 | V5 | Network graph | B | `graph.relations.RelationService` + `graph.graph.plotly_network` | IMPLEMENTED (M016) | yes | yes | bounded canonical relations; NetworkX/Plotly; no graph DB | P2 | M016 | DONE |
-| V6 | 3D galaxy | B/C | `advanced_viz.create_file_universe_3d` | PARTIAL | no | no | Plotly 3D, not Three.js galaxy | P3 | M020 | IMPROVE |
+| V6 | 3D galaxy | B/C | `advanced_viz.create_file_universe_3d` | STALE | no | no | non-semantic size/time/depth scatter; superseded by the M020 semantic galaxy | P3 | M020 | SUPERSEDED |
+| V6b | Semantic galaxy / global map | B | `galaxy.projection` + `galaxy.service.galaxy` | IMPLEMENTED (M020) | yes | yes | bounded PCA/SVD (UMAP/t-SNE optional & bounded); aggregation for LARGE; exploratory, not literal distance | P2 | M020 | DONE |
+| V6c | Cluster/topic drill-down | B | `galaxy.service.cluster_detail` + UI panel | IMPLEMENTED (M020) | yes | yes | size, cohesion, terms, entities, categories, representatives, dossier/report actions | P2 | M020 | DONE |
+| V6d | Galaxy & Topics UI | A | `ui/galaxy_page.py` | IMPLEMENTED (M020) | yes | yes | scope/projection/color/collapse controls, scatter, topic panel, context panel, topic-over-time | P2 | M020 | DONE |
 | V7 | Advanced visualization suite | B | `advanced_viz` (7 views) | IMPLEMENTED | partial | partial | — | P2 | CURRENT | KEEP |
 | V8 | Activity monitor + floating badge | A | `real_time_monitor` | IMPLEMENTED | UI smoke | partial | — | P1 | CURRENT | KEEP |
 | V9 | Progress bars | A | scanner + UI | IMPLEMENTED | UI smoke | yes | — | P1 | CURRENT | KEEP |
@@ -241,8 +245,9 @@ reranking depends on semantic search + provider abstraction
 - **M019**: opt-in loopback REST API, canonical `pis` CLI, doctor, bounded
   maintenance, app-consistent backup/restore, process-instance safety, and an
   evidence-based optional pgvector decision (KEEP_CURRENT — no server).
-- **M020**: advanced visualization (galaxy), clustering/topic modeling,
-  contextual intelligence surface.
+- **M020**: bounded semantic galaxy projection, scalable clustering,
+  evidence-backed c-TF-IDF topics, cluster/topic drill-down, contextual
+  document exploration, topic-over-time and overlays (all local, SQLite canonical).
 
 ## Top 10 highest-value missing mono-user capabilities
 
