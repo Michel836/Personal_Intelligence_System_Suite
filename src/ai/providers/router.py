@@ -406,7 +406,47 @@ class ProviderRouter:
         return llm, RoutingPolicy.PREFER_LOCAL
 
     # -- diagnostics -------------------------------------------------------
-    def status(self) -> dict:
+    def _default_model_for(self, kind: str, backend: str) -> str | None:
+        if kind == "llm":
+            if backend == "openai_compatible":
+                return self.config.api_llm_model
+            return self.config.llm_model
+        if backend == "openai_compatible":
+            return self.config.api_embedding_model
+        return self.config.embedding_model
+
+    def _describe_selection(self, kind: str) -> dict:
+        """Describe the selected backend using only cheap probes.
+
+        Never constructs a provider, so a status render cannot load a local
+        embedding model (M012-B2 lazy-startup requirement).
+        """
+        policy = self.llm_policy if kind == "llm" else self.embedding_policy
+        order = self._llm_order(policy) if kind == "llm" else self._embedding_order(policy)
+        requires_text = kind == "embeddings"
+        for backend in order:
+            if not self._allowed(backend, requires_text=requires_text):
+                continue
+            if not self._cheap_available(kind, backend):
+                continue
+            return {
+                "provider": backend,
+                "model": self._default_model_for(kind, backend),
+                "remote": backend == "openai_compatible",
+                "available": True,
+                "policy": policy.value,
+                "fallback_chain": None,
+            }
+        return {
+            "provider": "unavailable",
+            "model": "",
+            "remote": None,
+            "available": False,
+            "policy": policy.value,
+            "fallback_chain": None,
+        }
+
+    def status(self, *, cheap: bool = False) -> dict:
         def describe(provider, policy) -> dict:
             try:
                 info = provider.model_info()
@@ -422,8 +462,12 @@ class ProviderRouter:
                 return {"provider": "unknown", "model": "", "remote": None,
                         "available": False, "policy": policy.value, "fallback_chain": None}
 
-        llm = self.llm()
-        emb = self.embeddings()
+        if cheap:
+            llm_entry = self._describe_selection("llm")
+            emb_entry = self._describe_selection("embeddings")
+        else:
+            llm_entry = describe(self.llm(), self.llm_policy)
+            emb_entry = describe(self.embeddings(), self.embedding_policy)
         profile = self.profile
         return {
             "config": self.config.public_dict(),
@@ -433,8 +477,8 @@ class ProviderRouter:
                 "vram_gb": getattr(profile, "vram_gb", 0.0) if profile else 0.0,
                 "ram_gb": getattr(profile, "ram_gb", 0.0) if profile else 0.0,
             },
-            "llm": describe(llm, self.llm_policy),
-            "embeddings": describe(emb, self.embedding_policy),
+            "llm": llm_entry,
+            "embeddings": emb_entry,
             "usage": self.usage.snapshot(),
         }
 
@@ -449,9 +493,11 @@ def _default_ollama_probe() -> bool:
 
 
 def _default_st_probe() -> bool:
+    # Use find_spec rather than importing ``sentence_transformers``: importing it
+    # pulls in torch (~1 GB RSS, several seconds) purely to answer "available?".
     try:
-        from ...intelligence.embeddings import SENTENCE_TRANSFORMERS_AVAILABLE
+        import importlib.util
 
-        return bool(SENTENCE_TRANSFORMERS_AVAILABLE)
+        return importlib.util.find_spec("sentence_transformers") is not None
     except Exception:  # noqa: BLE001
         return False

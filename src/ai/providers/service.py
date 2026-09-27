@@ -45,8 +45,9 @@ class AIService:
             return None
         return ProviderEmbeddingGenerator(provider)
 
-    def status(self) -> dict:
-        return self.router.status()
+    def status(self, *, cheap: bool = False) -> dict:
+        """Diagnostics status. ``cheap=True`` never constructs a local model."""
+        return self.router.status(cheap=cheap)
 
 
 def build_router(config: AIConfig, usage: UsageTracker, hardware_profile=None) -> ProviderRouter:

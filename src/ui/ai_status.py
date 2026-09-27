@@ -6,20 +6,23 @@ Never displays API keys or secrets.
 from __future__ import annotations
 
 
+def ai_status_lines(service=None, *, cheap: bool = True) -> dict:
+    """Return a diagnostics-safe status dict (also used by tests).
 
-def ai_status_lines(service=None) -> dict:
-    """Return a diagnostics-safe status dict (also used by tests)."""
+    ``cheap=True`` (default) avoids constructing providers, so rendering AI
+    status never loads a local embedding model.
+    """
     if service is None:
         from ..ai.providers.service import get_ai_service
 
         service = get_ai_service()
-    return service.status()
+    return service.status(cheap=cheap)
 
 
 def render_ai_status(service=None, *, expanded: bool = False) -> None:
     import streamlit as st
 
-    status = ai_status_lines(service)
+    status = ai_status_lines(service, cheap=True)
     cfg = status.get("config", {})
     llm = status.get("llm", {})
     emb = status.get("embeddings", {})
