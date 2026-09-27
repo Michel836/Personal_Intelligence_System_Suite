@@ -146,6 +146,7 @@ _NAVIGATION: list[tuple[str, Capability]] = [
     ("🚀 Scanner", Capability.SCAN),
     ("🔍 Search", Capability.SEARCH),
     ("🎯 Advanced Search", Capability.ADVANCED_SEARCH),
+    ("🧬 Duplicates & Versions", Capability.DUPLICATES),
     ("🧠 AI Search", Capability.SEMANTIC_SEARCH),
     ("💬 AI Chat", Capability.AI_CHAT),
     ("🏷️ Tags & Favorites", Capability.TAGS),
@@ -253,6 +254,10 @@ def main():
     elif page == "🎯 Advanced Search":
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Advanced Search page"):
             advanced_search_page()
+    elif page == "🧬 Duplicates & Versions":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Duplicates & Versions page"):
+            from src.ui.dedup_page import render as render_dedup_page
+            render_dedup_page()
     elif page == "🏷️ Tags & Favorites":
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Tags & Favorites page"):
             tags_favorites_page()
