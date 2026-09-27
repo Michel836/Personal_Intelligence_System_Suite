@@ -148,6 +148,7 @@ _NAVIGATION: list[tuple[str, Capability]] = [
     ("🎯 Advanced Search", Capability.ADVANCED_SEARCH),
     ("🧬 Duplicates & Versions", Capability.DUPLICATES),
     ("🧠 Document Intelligence", Capability.INTELLIGENCE),
+    ("🧭 Timeline & Graph", Capability.GRAPH),
     ("🧠 AI Search", Capability.SEMANTIC_SEARCH),
     ("💬 AI Chat", Capability.AI_CHAT),
     ("🏷️ Tags & Favorites", Capability.TAGS),
@@ -263,6 +264,10 @@ def main():
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Document Intelligence page"):
             from src.ui.intel_page import render as render_intel_page
             render_intel_page()
+    elif page == "🧭 Timeline & Graph":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Timeline & Graph page"):
+            from src.ui.graph_page import render as render_graph_page
+            render_graph_page()
     elif page == "🏷️ Tags & Favorites":
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Tags & Favorites page"):
             tags_favorites_page()
