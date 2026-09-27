@@ -104,9 +104,9 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | A3 | RAG / AI chat | A | `chat_engine.py` + providers | IAI | yes | yes | — | P0 | CURRENT | KEEP |
 | A4 | Summaries | A | `ai/advanced_ai.py` | IMPLEMENTED | partial | partial | LLM-dependent, no batch UI polish | P1 | CURRENT | IMPROVE |
 | A5 | Document Q&A / history | C | `advanced_ai.ask_question` + `qa_history` | IMPLEMENTED | partial | partial | basic retrieval, no rerank | P2 | M014 | IMPROVE |
-| A6 | Language detection | B | — | PNI | no | no | `langdetect` in requirements only | P2 | M015 | IMPLEMENT |
-| A7 | Categorization / auto-classification | A | `ui/intelligence.generate_auto_tags` | PARTIAL | no | no | heuristic, not persisted classes | P2 | M015 | COMPLETE |
-| A8 | Entity extraction (spaCy) | B | `core/models.Entity` (unused) | PNI | no | no | model exists, no NLP pipeline | P2 | M015 | IMPLEMENT |
+| A6 | Language detection | B | `intel.language` (stopword+script, no external dep) | IMPLEMENTED (M015) | yes | yes | local; FR/DE/EN priority; UNKNOWN/INSUFFICIENT/CODE states | P2 | M015 | DONE |
+| A7 | Categorization / auto-classification | A | `intel.categories` + `taxonomy.json` | IMPLEMENTED (M015) | yes | yes | configurable taxonomy, multi-label, manual override wins | P2 | M015 | DONE |
+| A8 | Entity extraction (spaCy) | B | `intel.entities` (regex+validation, optional heuristics) | IMPLEMENTED (M015) | yes | yes | dependency-free; PERSON/ORG/LOC marked heuristic | P2 | M015 | DONE |
 | A9 | Duplicate detection (exact) | B | `dedup.exact.ExactDuplicateEngine` (SHA-256 `content_hashes`) | IMPLEMENTED (M014) | yes | yes | size-first incremental hashing; 72,268 groups / 57.9 GB on 303k corpus | P1 | M014 | DONE |
 | A10 | Near-duplicate (MinHash/pgvector) | B | `dedup.near.NearDuplicateEngine` (hyperplane LSH + semantic confirm) | IMPLEMENTED (M014) | yes | yes | bounded, no O(N²); pgvector still an option >100k | P2 | M014 | DONE |
 | A11 | Version tracking | B | `dedup.versions.VersionTracker` (`version_families`) | IMPLEMENTED (M014) | yes | yes | explicit-marker confidence; chronology never invented | P2 | M014 | DONE |
@@ -151,9 +151,9 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | P2 | No telemetry | A | none present | IMPLEMENTED | implicit | yes | PROTECT | P0 | CURRENT | KEEP |
 | P3 | No automatic cloud | A | `cloud/sync_manager.py` (manual Dropbox) | IMPLEMENTED | partial | no | KEEP | P0 | CURRENT | KEEP |
 | P4 | Remote-content policy | B | `ai/providers/policy.py` (M012-A) | IMPLEMENTED | yes | partial | KEEP | P1 | M012-B | KEEP |
-| P5 | Sensitive-data/PII detection | B | — | PNI | no | no | IMPLEMENT | P2 | M015 | IMPLEMENT |
-| P6 | Encryption at rest | B | config placeholder only | PNI | no | no | OPTIONAL | P2 | M015 | IMPLEMENT |
-| P7 | Audit trail | B | `core/advanced_logging.py` + sync history | PARTIAL | no | no | IMPROVE | P2 | M015 | IMPROVE |
+| P5 | Sensitive-data/PII detection | B | `intel.pii` (validated: mod-97/Luhn/NIR) | IMPLEMENTED (M015) | yes | yes | masked+fingerprinted only; conservative | P2 | M015 | DONE |
+| P6 | Encryption at rest | B | boundary documented; OS disk encryption recommended | PARTIAL/BOUNDED (M015) | no | no | app-level crypto not meaningful (lib absent, key-beside-ciphertext) | P2 | M015 | DOCUMENT |
+| P7 | Audit trail | B | `intel.audit` + `audit_events` table | IMPLEMENTED (M015) | yes | yes | local, bounded, no sensitive payloads | P2 | M015 | DONE |
 | P8 | Role-based access control | C | — | NA | — | — | DROP | P3 | DROP | DROP |
 | P9 | Multi-user auth (JWT) | C | config placeholder | NA | — | — | DROP | P3 | DROP | DROP |
 
