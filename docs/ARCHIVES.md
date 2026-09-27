@@ -20,6 +20,19 @@ never extracted back into a source directory.
 A missing backend or a corrupt/locked archive returns an explicit status and
 never raises out of the batch.
 
+## Bounded member extraction (M013-C2)
+
+Listing has its own deadline (`PIS_ARCHIVE_TIMEOUT`). Member extraction is
+additionally bounded by a per-archive total budget
+(`PIS_ARCHIVE_EXTRACT_TIMEOUT`, default 120 s). When the budget is exhausted the
+archive returns the transient `LIMIT_EXTRACT_TIME` status, the members already
+extracted stay valid, and the remaining members stay `PENDING`. Because
+`LIMIT_EXTRACT_TIME` is not a deterministic status it is never cached, so a
+later run resumes the archive and processes only its `PENDING` members (terminal
+member states are skipped). The budget is checked between members, so the
+overshoot is at most one member; a single archive can never monopolise the
+pipeline.
+
 ## Virtual member identity
 
 ```
@@ -45,7 +58,8 @@ The parent row keeps `archive_fingerprint`, `archive_indexed_at`,
 | `PIS_ARCHIVE_MAX_MEMBER_BYTES` | `67108864` | per-member decompressed cap |
 | `PIS_ARCHIVE_MAX_TOTAL_UNCOMPRESSED` | `1073741824` | cumulative decompressed cap |
 | `PIS_ARCHIVE_MAX_RATIO` | `200` | compression-ratio guard (files > 1 MiB) |
-| `PIS_ARCHIVE_TIMEOUT` | `30` | per-archive soft deadline (seconds) |
+| `PIS_ARCHIVE_TIMEOUT` | `30` | per-archive **listing/indexing** deadline (seconds) |
+| `PIS_ARCHIVE_EXTRACT_TIMEOUT` | `120` | per-archive **member-extraction** budget (seconds) |
 
 ## Safety
 

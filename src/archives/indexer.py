@@ -205,6 +205,15 @@ class ArchiveIndexer:
                 inspector, parent_id, parent_path, member_dicts, result,
                 depth=depth, budget=budget, scan_id=scan_id, volume_id=volume_id,
             )
+            if result.status == ArchiveStatus.LIMIT_EXTRACT_TIME.value:
+                # Persist the transient status so the deterministic fast path does
+                # not cache the archive and the next run resumes the PENDING set.
+                self.db.set_archive_index_state(
+                    parent_id, fingerprint=fingerprint, status=result.status,
+                    member_count=result.member_count, encrypted_count=result.encrypted_count,
+                    compressed_size=result.compressed_size, expanded_size=result.expanded_size,
+                    format_name=inspector.format.value, processing_version=cache_token,
+                )
         result.elapsed = time.time() - start
         return result
 
@@ -224,11 +233,23 @@ class ArchiveIndexer:
     ) -> None:
         rows = {r["archive_member_path"]: r for r in self.db.get_archive_members(parent_id)}
         manager = self._get_manager()
+        # Per-archive total extraction budget: listing has its own timeout, but
+        # extraction previously had none, so an archive with many slow members
+        # could monopolise the pipeline indefinitely.
+        deadline = time.monotonic() + self.limits.extract_timeout
+        timed_out = False
         with tempfile.TemporaryDirectory(prefix="pis-arc-") as tmpdir:
             for md in member_dicts:
                 row = rows.get(md["member_path"])
                 if row is None:
                     continue
+                # Resume-safe: members already resolved by a previous pass are
+                # never re-read/re-extracted (terminal states are not PENDING).
+                if str(row.get("extraction_state") or "PENDING").upper() != "PENDING":
+                    continue
+                if time.monotonic() > deadline:
+                    timed_out = True
+                    break
                 if not md.get("is_encrypted") and self._is_nested_archive(md) and depth < self.limits.max_depth:
                     if self._index_nested(inspector, row, md, depth, budget, scan_id, volume_id, tmpdir, result):
                         continue
@@ -250,6 +271,13 @@ class ArchiveIndexer:
                 else:
                     self.db.set_member_extraction(row["id"], content=content, state="EXTRACTED")
                     result.extracted += 1
+        if timed_out:
+            result.status = ArchiveStatus.LIMIT_EXTRACT_TIME.value
+            logger.warning(
+                "archive extraction budget exhausted (%.1fs) for %s; "
+                "remaining members stay PENDING for a later resume",
+                self.limits.extract_timeout, parent_path,
+            )
 
     def _index_nested(
         self, inspector, row, md, depth, budget, scan_id, volume_id, tmpdir, result

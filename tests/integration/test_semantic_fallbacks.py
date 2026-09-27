@@ -6,7 +6,7 @@ import numpy as np
 import src.intelligence.semantic_search as ss
 from src.core.database import DatabaseManager
 from src.intelligence.embedding_store import EmbeddingMatrixStore
-from src.intelligence.embeddings import EmbeddingGenerator
+from src.intelligence.embeddings import EmbeddingGenerationError
 
 
 class _FakeEmbeddings:
@@ -90,3 +90,21 @@ def test_dimension_mismatch_store_search_raises(tmp_path):
         raise AssertionError("expected dimension mismatch")
     except Exception as exc:
         assert "dim" in str(exc).lower() or "mismatch" in str(exc).lower()
+
+
+class _OomEmbeddings(_FakeEmbeddings):
+    """Fails at the minimum batch, as a genuinely unusable GPU model would."""
+
+    def generate_batch_embeddings(self, texts, batch_size=32, show_progress=True):
+        raise EmbeddingGenerationError("simulated CUDA OOM at minimum batch size")
+
+
+def test_embedding_oom_degrades_to_lexical(tmp_path, monkeypatch):
+    monkeypatch.setattr(ss, "EmbeddingGenerator", _OomEmbeddings)
+    monkeypatch.setenv("PIS_EMBEDDING_STORE_DIR", str(tmp_path / "store"))
+    db = DatabaseManager(tmp_path / "db.db")
+    _seed(db)
+    engine = ss.SemanticSearchEngine(db)
+    # Must not raise; falls back to lexical search and leaves rows dirty.
+    results = engine.semantic_search("document", limit=3)
+    assert results

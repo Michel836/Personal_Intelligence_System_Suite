@@ -109,6 +109,10 @@ class ArchiveStatus(str, Enum):
     LIMIT_MEMBER_SIZE = "LIMIT_MEMBER_SIZE"
     LIMIT_TOTAL_SIZE = "LIMIT_TOTAL_SIZE"
     LIMIT_COMPRESSION_RATIO = "LIMIT_COMPRESSION_RATIO"
+    # The per-archive member-extraction time budget was exhausted. Transient:
+    # already-extracted members stay valid and the archive is retried on a later
+    # run for its remaining PENDING members.
+    LIMIT_EXTRACT_TIME = "LIMIT_EXTRACT_TIME"
     # Signature says the file is a different archive format than its extension.
     EXTENSION_MISMATCH = "EXTENSION_MISMATCH"
     # No known archive signature at all (e.g. a proprietary file named *.zip).

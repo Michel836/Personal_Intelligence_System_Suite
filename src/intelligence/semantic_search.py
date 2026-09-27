@@ -14,7 +14,7 @@ from loguru import logger
 from ..core.database import DatabaseManager
 from ..core.perf_config import get_resource_config
 from ..core.validation import validate_semantic_search_params, SemanticSearchParams, ValidationError
-from .embeddings import EmbeddingGenerator
+from .embeddings import EmbeddingGenerator, EmbeddingGenerationError
 
 
 class SemanticSearchEngine:
@@ -143,8 +143,12 @@ class SemanticSearchEngine:
                 matrix.append(emb)
                 entries.append((fid, ver))
             if not entries:
-                # Embedding failed for the whole batch: leave rows dirty and
-                # retry on a later call rather than looping forever.
+                # Embedding produced nothing usable for this batch. Do not spin
+                # forever: surface it explicitly and leave rows dirty for retry.
+                logger.error(
+                    "semantic refresh made no progress on %d dirty row(s); aborting this pass",
+                    len(dirty),
+                )
                 break
             store.append(ids, np.vstack(matrix), hashes=[v for _, v in entries])
             self.db.mark_semantic_embedded(entries, model_key=model_key, dim=dim)
@@ -233,8 +237,9 @@ class SemanticSearchEngine:
             try:
                 store = self._get_store()
                 self._refresh_semantic(store, model_key=store.model_key, dim=store.dim)
-            except AIProviderError as exc:
-                # A remote provider failed: degrade to lexical search, never crash.
+            except (AIProviderError, EmbeddingGenerationError) as exc:
+                # A provider/embedding failure must degrade to lexical search,
+                # never crash the query. Rows stay dirty and are retried later.
                 logger.warning(f"semantic refresh unavailable ({exc}); using lexical search")
                 return self.db.search_files(query=params.query, limit=params.limit)
             generation = self.db.semantic_generation()

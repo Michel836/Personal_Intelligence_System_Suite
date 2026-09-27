@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 # Bump when member-selection / extraction semantics change so that a rescan can
 # explicitly re-index archives that were processed by an older version.
-ARCHIVE_PROCESSING_VERSION = "1"
+ARCHIVE_PROCESSING_VERSION = "2"
 
 # Processing policies for member content extraction (M009J.18).
 POLICY_METADATA_ONLY = "METADATA_ONLY"
@@ -44,6 +44,11 @@ class ArchiveLimits:
     max_total_uncompressed: int = 1024 * 1024 * 1024
     max_ratio: int = 200
     timeout: float = 30.0
+    # Total wall-clock budget for *member extraction* of one archive (listing
+    # has its own ``timeout``). Prevents a single archive with many slow members
+    # from monopolising the pipeline; a budget-exhausted archive is left
+    # partially extracted and is retried (PENDING members only) on a later run.
+    extract_timeout: float = 120.0
 
     @classmethod
     def from_env(cls) -> "ArchiveLimits":
@@ -56,6 +61,7 @@ class ArchiveLimits:
             ),
             max_ratio=_env_int("PIS_ARCHIVE_MAX_RATIO", 200),
             timeout=float(_env_int("PIS_ARCHIVE_TIMEOUT", 30)),
+            extract_timeout=float(_env_int("PIS_ARCHIVE_EXTRACT_TIMEOUT", 120)),
         )
 
     def cache_signature(self) -> str:
@@ -64,7 +70,8 @@ class ArchiveLimits:
 
         raw = (
             f"{self.max_depth}:{self.max_members}:{self.max_member_bytes}:"
-            f"{self.max_total_uncompressed}:{self.max_ratio}:{int(self.timeout)}"
+            f"{self.max_total_uncompressed}:{self.max_ratio}:{int(self.timeout)}:"
+            f"{int(self.extract_timeout)}"
         )
         return hashlib.blake2b(raw.encode(), digest_size=6).hexdigest()
 

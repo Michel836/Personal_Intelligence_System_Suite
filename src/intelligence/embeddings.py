@@ -30,6 +30,15 @@ EMBEDDING_MODELS: Dict[str, Dict[str, Any]] = {
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 
+class EmbeddingGenerationError(RuntimeError):
+    """Raised when embeddings cannot be produced even at the minimum batch size.
+
+    The build must not silently return ``None`` for every vector on CUDA OOM:
+    it retries with progressively smaller batches first, and only fails
+    explicitly once a single-item batch also OOMs.
+    """
+
+
 def resolve_model_key(model_name: Optional[str] = None) -> str:
     """Resolve a model key from an argument, ``PIS_EMBEDDING_MODEL`` or default."""
     import os
@@ -55,6 +64,8 @@ class EmbeddingGenerator:
         self.model_name = EMBEDDING_MODELS[self.model_key]["hf"]
         self.model = None
         self.embedding_dim = None
+        # Set by ``_encode_with_fallback``; useful for diagnostics/tests.
+        self.last_effective_batch_size: Optional[int] = None
 
         # Cache namespaced by model so vectors from different spaces never mix.
         # Honour an explicit path so trials/tests never write into the repo.
@@ -75,7 +86,7 @@ class EmbeddingGenerator:
             self._maybe_half()
             
             # Test embedding to get dimension
-            test_embedding = self._encode(["test"])
+            test_embedding = self._encode_with_fallback(["test"], batch_size=1)
             self.embedding_dim = int(len(test_embedding[0]))
             self._write_model_metadata()
             
@@ -111,8 +122,63 @@ class EmbeddingGenerator:
 
             with torch.inference_mode():
                 return np.asarray(self.model.encode(texts, **kwargs))
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # CUDA OOM must reach the adaptive retry, never a blind second try.
+            if self._is_cuda_oom(exc):
+                raise
             return np.asarray(self.model.encode(texts, **kwargs))
+
+    # -- adaptive CUDA-OOM fallback ---------------------------------------
+    MIN_BATCH_SIZE = 1
+
+    @staticmethod
+    def _is_cuda_oom(exc: BaseException) -> bool:
+        """Return True for CUDA/CuDNN out-of-memory errors (deterministic)."""
+        name = type(exc).__name__
+        if name in {"OutOfMemoryError", "CudaOutOfMemoryError"}:
+            return True
+        msg = str(exc).lower()
+        return "out of memory" in msg and ("cuda" in msg or "gpu" in msg or "memory" in msg)
+
+    @staticmethod
+    def _clear_cuda_cache() -> None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001 - best effort only
+            pass
+
+    def _encode_with_fallback(
+        self, texts: List[str], batch_size: Optional[int] = None
+    ) -> "np.ndarray[Any, Any]":
+        """Encode one chunk, halving the batch on CUDA OOM down to size 1.
+
+        Raises :class:`EmbeddingGenerationError` when even a single-item batch
+        cannot be encoded, so a failure is explicit and never silently skipped.
+        """
+        requested = int(batch_size or len(texts) or 1)
+        batch = max(1, min(requested, len(texts) or 1))
+        while True:
+            try:
+                result = self._encode(texts, batch_size=batch)
+                self.last_effective_batch_size = batch
+                return result
+            except Exception as exc:  # noqa: BLE001
+                if not self._is_cuda_oom(exc):
+                    raise
+                self._clear_cuda_cache()
+                if batch <= self.MIN_BATCH_SIZE:
+                    raise EmbeddingGenerationError(
+                        f"embedding failed at minimum batch size {self.MIN_BATCH_SIZE}: {exc}"
+                    ) from exc
+                next_batch = max(self.MIN_BATCH_SIZE, batch // 2)
+                logger.warning(
+                    "CUDA OOM encoding %d texts at batch %d; retrying at batch %d",
+                    len(texts), batch, next_batch,
+                )
+                batch = next_batch
     
     def _write_model_metadata(self) -> None:
         """Persist model provenance next to its embedding cache."""
@@ -144,7 +210,7 @@ class EmbeddingGenerator:
                 return None
             
             # Generate embedding
-            embedding = self._encode([text])[0]
+            embedding = self._encode_with_fallback([text], batch_size=1)[0]
             return embedding.astype(np.float32)  # Save memory
             
         except Exception as e:
@@ -180,29 +246,24 @@ class EmbeddingGenerator:
         
         # Generate embeddings in batches
         embeddings = []
-        
-        try:
-            for i in range(0, len(valid_texts), batch_size):
-                batch = valid_texts[i:i + batch_size]
-                
-                if show_progress and i % (batch_size * 5) == 0:
-                    logger.info(f"Processing batch {i//batch_size + 1}/{(len(valid_texts) + batch_size - 1)//batch_size}")
-                
-                batch_embeddings = self._encode(batch, batch_size=batch_size)
-                embeddings.extend(batch_embeddings.astype(np.float32))
-            
-            # Map back to original indices
-            result = [None] * len(texts)
-            for i, embedding in enumerate(embeddings):
-                original_idx = valid_indices[i]
-                result[original_idx] = embedding
-            
-            logger.info(f"Generated {len(embeddings)} embeddings successfully")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in batch embedding generation: {e}")
-            return [None] * len(texts)
+
+        for i in range(0, len(valid_texts), batch_size):
+            batch = valid_texts[i:i + batch_size]
+
+            if show_progress and i % (batch_size * 5) == 0:
+                logger.info(f"Processing batch {i//batch_size + 1}/{(len(valid_texts) + batch_size - 1)//batch_size}")
+
+            batch_embeddings = self._encode_with_fallback(batch, batch_size=batch_size)
+            embeddings.extend(batch_embeddings.astype(np.float32))
+
+        # Map back to original indices
+        result = [None] * len(texts)
+        for i, embedding in enumerate(embeddings):
+            original_idx = valid_indices[i]
+            result[original_idx] = embedding
+
+        logger.info(f"Generated {len(embeddings)} embeddings successfully")
+        return result
     
     def _prepare_text(self, text: str) -> str:
         """Clean and prepare text for embedding."""
