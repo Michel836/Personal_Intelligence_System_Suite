@@ -10,7 +10,7 @@ from src.dedup.rerank import rerank_search
 from src.scanner.models import FileType
 
 
-def _save(db, factory, path: Path, *, mtime=datetime.datetime(2026, 1, 1)):
+def _save(db, factory, path: Path, *, mtime=datetime.datetime(2026, 1, 1)):  # noqa: DTZ001
     return db.save_file(factory(path, size_bytes=10, file_type=FileType.DOCUMENT, modified_at=mtime))
 
 
@@ -21,7 +21,7 @@ class _FakeSemantic:
     def is_available(self):
         return True
 
-    def semantic_search(self, query, limit=20, similarity_threshold=0.0):
+    def semantic_search(self, _query, limit=20, _similarity_threshold=0.0):
         return self._results[:limit]
 
 

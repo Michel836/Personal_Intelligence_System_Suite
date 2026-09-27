@@ -8,7 +8,7 @@ from src.core.database import DatabaseManager
 from src.dedup import ContentHasher, DedupStore, ExactDuplicateEngine
 from src.scanner.models import FileType
 
-_NOW = datetime.datetime(2026, 1, 1, 12, 0, 0)
+_NOW = datetime.datetime(2026, 1, 1, 12, 0, 0)  # noqa: DTZ001
 
 
 def _save(db: DatabaseManager, factory, path: Path, *, size=None, kind=FileType.OTHER):

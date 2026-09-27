@@ -11,7 +11,7 @@ from src.dedup import DedupStore, NearDuplicateEngine, VersionTracker
 from src.intelligence.embedding_store import EmbeddingMatrixStore
 from src.scanner.models import FileType
 
-_T0 = datetime.datetime(2026, 1, 1, 12, 0, 0)
+_T0 = datetime.datetime(2026, 1, 1, 12, 0, 0)  # noqa: DTZ001
 
 
 def _save(db, factory, path: Path, *, mtime=_T0):
@@ -77,9 +77,9 @@ def test_version_family_confidence_and_order(tmp_path, file_info_factory) -> Non
     dstore = DedupStore(db)
     d = tmp_path / "docs"
     d.mkdir()
-    for name, mtime in (("rapport_v1.txt", datetime.datetime(2026, 1, 1)),
-                        ("rapport_v2.txt", datetime.datetime(2026, 2, 1)),
-                        ("rapport_final.txt", datetime.datetime(2026, 3, 1))):
+    for name, mtime in (("rapport_v1.txt", datetime.datetime(2026, 1, 1)),  # noqa: DTZ001
+                        ("rapport_v2.txt", datetime.datetime(2026, 2, 1)),  # noqa: DTZ001
+                        ("rapport_final.txt", datetime.datetime(2026, 3, 1))):  # noqa: DTZ001
         p = d / name
         p.write_text("content of " + name + " " * 20)
         _save(db, file_info_factory, p, mtime=mtime)

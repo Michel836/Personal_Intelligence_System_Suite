@@ -15,7 +15,7 @@ from src.intelligence.embedding_store import EmbeddingMatrixStore
 from src.scanner.models import FileType
 
 
-def _save(db, factory, path: Path, mtime=datetime.datetime(2026, 1, 1)):
+def _save(db, factory, path: Path, mtime=datetime.datetime(2026, 1, 1)):  # noqa: DTZ001
     return db.save_file(factory(path, size_bytes=path.stat().st_size,
                                 file_type=FileType.DOCUMENT, modified_at=mtime))
 
