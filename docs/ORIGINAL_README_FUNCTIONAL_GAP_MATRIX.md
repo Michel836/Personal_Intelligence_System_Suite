@@ -38,9 +38,9 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 
 | ID | README feature | Layer | Current module/path | UI surface | Status | Tests | Real-data | Gap | Priority | Milestone | Action |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| L1 | LITE mode (30MB, <1s, port 8510) | A | `launchers/lite_mode.py` | standalone Streamlit | PARTIAL | none | no | not root-level; Windows-only commands; no measured 30MB/<1s | P2 | M012-B | IMPROVE |
-| L2 | Smart Launcher (module selection, estimation) | A | `launchers/smart_launcher.py` | module picker | PARTIAL | none | no | not wired to AI providers/perf tiers | P2 | M012-B | IMPROVE |
-| L3 | Full Power launcher (port 8501) | A | `launchers/launcher.py` → `src/ui/app.py` | classic app | PARTIAL | UI smoke | yes | launch path/ports differ from README | P2 | M012-B | IMPROVE |
+| L1 | LITE mode (30MB, <1s, port 8510) | A | `src/core/launch_profile.py` + `src/launcher.py` | canonical app, core pages | IMPLEMENTED (M012-B2) | yes | yes | measured 0.87s / ~169MB peak (old 30MB/<1s partly obsolete) | P2 | M012-B | DONE |
+| L2 | Smart Launcher (module selection, estimation) | A | `src/launcher.py` + provider router | canonical app, hardware-aware AUTO | IMPLEMENTED (M012-B2) | yes | yes | module picker replaced by capability flags/profiles | P2 | M012-B | DONE |
+| L3 | Full Power launcher (port 8501) | A | `src/launcher.py` → `src/ui/app.py` | canonical app, all pages | IMPLEMENTED (M012-B2) | yes | yes | ports are defaults, not requirements | P2 | M012-B | DONE |
 | L4 | Performance presets / resource estimation | A | `core/perf_config.py` + `ai/providers/router.py` | AI status | IAI | yes (M010/M012-A) | yes | README numbers superseded | P1 | CURRENT | KEEP |
 | L5 | Real-time activity monitoring + floating badge | A | `ui/real_time_monitor.py`, `ui/activity_monitor.py` | sidebar + badge | IMPLEMENTED | UI smoke | partial | history persistence limited | P1 | CURRENT | KEEP |
 | L6 | Modern interface + onboarding | A | `ui/modern_app.py`, `ui/onboarding.py` | modern app | IMPLEMENTED | UI smoke | no | second UI surface to maintain | P2 | M020 | KEEP |
@@ -184,8 +184,8 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | D8 | Docker/Dockerfile/compose | B | — | PNI | P3 | BACKLOG | OPTIONAL |
 | Perf1 | 1,000 files/s scan | A | measured 9,604 files/s (M010) | IMPROVED | P0 | CURRENT | KEEP |
 | Perf2 | Search <200 ms | A | FTS p50 0.5 ms/p95 28 ms; semantic ~0.05 ms | IMPROVED | P0 | CURRENT | KEEP |
-| Perf3 | Startup <1 s / ~25 s | A | ~11 s initial app smoke | NV | P2 | M012-B | VERIFY |
-| Perf4 | RAM 30 MB / 2.8 GB | A | scan 62 MB; extraction 382 MB; embedding host 2.15 GB | NV | P2 | M012-B | VERIFY |
+| Perf3 | Startup <1 s / ~25 s | A | measured LITE/SMART/FULL app ready p50 0.87-0.88 s (M012-B2) | VALIDATED | P2 | M012-B | DONE |
+| Perf4 | RAM 30 MB / 2.8 GB | A | at-rest canonical app ~169 MB peak, 0 MB VRAM; models load only on demand | REVISED | P2 | M012-B | DONE |
 | Perf5 | 10M-doc search latency | B | projections only | NV | P1 | M013 | VERIFY |
 | Perf6 | Embedding 200 docs/s | A | measured 14.7 vec/s (bge-m3, long docs) | OBSOLETE | P2 | M013 | REVISE |
 
