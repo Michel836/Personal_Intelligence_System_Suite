@@ -176,15 +176,17 @@ def cmd_intel(args: argparse.Namespace) -> int:
 
 
 def cmd_graph(args: argparse.Namespace) -> int:
-    from .graph import RelationService
+    from .graph import DocumentGraph, RelationService
     db = _active_db(args)
-    service = RelationService(db)
     if args.file_id is not None:
         types = [t for t in (args.types or "").split(",") if t] or None
-        data = service.neighborhood(int(args.file_id), types=types, depth=int(args.depth),
-                                    max_nodes=50, max_edges=120)
-        return _emit(args, data, f"graph: nodes={data['metrics']['nodes']} "
-                                 f"edges={data['metrics']['edges']}")
+        data = DocumentGraph(db).neighborhood(int(args.file_id), types=types,
+                                              depth=int(args.depth), max_nodes=50,
+                                              max_edges=120)
+        metrics = data.get("metrics", {})
+        return _emit(args, data, f"graph: nodes={metrics.get('nodes')} "
+                                 f"edges={metrics.get('edges')}")
+    service = RelationService(db)
     data = service.entity_graph(min_docs=int(args.min_docs), max_entities=200, max_edges=1000)
     return _emit(args, data, f"entity graph: {data['stats']}")
 

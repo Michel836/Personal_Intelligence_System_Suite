@@ -52,6 +52,17 @@ def test_search_json_has_results(tmp_path, capsys) -> None:
     assert code == 0 and data["available"] is True and data["count"] >= 1
 
 
+def test_graph_neighborhood_reports_bounded_metrics(tmp_path, capsys) -> None:
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "g.txt").write_text("graphcli token", encoding="utf-8")
+    _run(capsys, [*_db_arg(tmp_path), "scan", str(root)])
+    code, data = _run(capsys, [*_db_arg(tmp_path), "graph", "--file-id", "1"])
+    assert code == 0
+    assert data["metrics"]["nodes"] >= 1
+    assert data["bounds"]["max_nodes"] == 50
+
+
 def test_maintenance_bounds_and_confirmation(tmp_path, capsys) -> None:
     code, listing = _run(capsys, [*_db_arg(tmp_path), "maintenance", "list"])
     assert code == 0 and "integrity" in listing["operations"]
