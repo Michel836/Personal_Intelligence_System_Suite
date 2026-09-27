@@ -2856,12 +2856,12 @@ def file_viewer_page():
                             st.session_state['selected_file_data'] = result
                         
                         if st.button(f"📂 Open Location", key=f"db_location_{i}"):
-                            try:
-                                import subprocess
-                                subprocess.run(f'explorer /select,"{result["path"]}"', shell=True)
+                            from src.utils.os_open import reveal_path
+
+                            if reveal_path(result["path"]):
                                 st.success("Opening location...")
-                            except Exception as e:
-                                st.error(f"Could not open: {e}")
+                            else:
+                                st.error("Could not open file location")
 
                     _render_archive_details(result)
     
@@ -2986,8 +2986,10 @@ def show_file_preview(result: dict, index: int) -> None:
         if file_path.exists():
             if st.button(f"📂 Open File", key=f"open_{index}"):
                 try:
-                    import os
-                    os.startfile(str(file_path))
+                    from src.utils.os_open import open_path
+
+                    if not open_path(file_path):
+                        raise RuntimeError("no file opener available")
                     st.success("Opening file...")
                 except Exception as e:
                     st.error(f"Could not open file: {e}")
@@ -3369,13 +3371,13 @@ def auto_extract_page():
 
 
 def open_file_location(file_path: Path):
-    """Open file location in Windows Explorer."""
-    try:
-        import subprocess
-        subprocess.run(f'explorer /select,"{file_path}"', shell=True)
+    """Reveal a file in the OS file manager (cross-platform)."""
+    from src.utils.os_open import reveal_path
+
+    if reveal_path(file_path):
         st.success("Opening folder...")
-    except Exception as e:
-        st.error(f"Could not open folder: {e}")
+    else:
+        st.error("Could not open folder")
 
 
 def manage_file_tags(file_id: int, filename: str):
