@@ -12,8 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 #: Kept in sync with the operational schema/report contract.
-APP_VERSION = "1.0.0"
-OPS_VERSION = "m019.1"
+APP_VERSION = "1.0.0-rc1"
+OPS_VERSION = "m021.1"
 
 
 @lru_cache(maxsize=1)

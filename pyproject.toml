@@ -1,6 +1,6 @@
 [project]
 name = "36tb-intelligence"
-version = "0.1.0"
+version = "1.0.0rc1"
 description = "Personal Knowledge Operating System for 36TB of data"
 authors = [{name = "Your Name", email = "your.email@domain.com"}]
 license = {text = "Private"}
