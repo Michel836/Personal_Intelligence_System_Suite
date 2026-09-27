@@ -81,6 +81,7 @@ class Capability(str, Enum):
     SETTINGS = "settings"
     ARCHIVE_VIEWER = "archive_viewer"
     DUPLICATES = "duplicates"
+    INTELLIGENCE = "intelligence"
 
     # Advanced capabilities: exposed by SMART/FULL, hidden by default in LITE.
     SEMANTIC_SEARCH = "semantic_search"
@@ -103,6 +104,7 @@ CORE_CAPABILITIES: frozenset[Capability] = frozenset(
         Capability.SETTINGS,
         Capability.ARCHIVE_VIEWER,
         Capability.DUPLICATES,
+        Capability.INTELLIGENCE,
     }
 )
 
