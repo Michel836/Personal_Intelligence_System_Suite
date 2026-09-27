@@ -32,15 +32,16 @@ class RelationType(str, Enum):
     USER_TAG = "USER_TAG"
     FAVORITE = "FAVORITE"
     TEMPORAL_PROXIMITY = "TEMPORAL_PROXIMITY"
+    EMAIL_REPLY_TO = "EMAIL_REPLY_TO"
 
 
 #: Directed types (source -> target). Everything else is undirected.
-DIRECTED = {RelationType.ARCHIVE_CONTAINS, RelationType.VERSION_OF}
+DIRECTED = {RelationType.ARCHIVE_CONTAINS, RelationType.VERSION_OF, RelationType.EMAIL_REPLY_TO}
 
 DEFAULT_NEIGHBORHOOD_TYPES = {
     RelationType.EXACT_DUPLICATE, RelationType.NEAR_DUPLICATE, RelationType.VERSION_OF,
     RelationType.SEMANTIC_RELATED, RelationType.ARCHIVE_CONTAINS, RelationType.SAME_ENTITY,
-    RelationType.USER_TAG, RelationType.FAVORITE,
+    RelationType.USER_TAG, RelationType.FAVORITE, RelationType.EMAIL_REPLY_TO,
 }
 #: Potentially high-degree types — opt-in and always bounded.
 OPTIONAL_TYPES = {
@@ -146,6 +147,8 @@ class RelationService:
             out.extend(self._temporal(fid, max_per_type))
         if RelationType.SAME_LANGUAGE.value in wanted:
             out.extend(self._same_language(fid, max_per_type))
+        if RelationType.EMAIL_REPLY_TO.value in wanted:
+            out.extend(self._email_thread(fid, max_per_type))
         if semantic and RelationType.SEMANTIC_RELATED.value in wanted:
             out.extend(self._semantic(fid, max_per_type))
         return out
@@ -314,6 +317,19 @@ class RelationService:
                 "SELECT file_id FROM favorites WHERE file_id != ? LIMIT ?", (fid, int(limit))).fetchall()
         return [Relation(fid, int(r[0]), RelationType.FAVORITE.value, 1.0, {}, False, "favorites")
                 for r in rows]
+
+    def _email_thread(self, fid: int, limit: int) -> list[Relation]:
+        try:
+            from ..ingest.thread_store import EmailThreadStore
+            store = EmailThreadStore(self.db)
+            return [Relation(fid, int(r["id"]), RelationType.EMAIL_REPLY_TO.value, 1.0,
+                             {"message_id": r.get("message_id"),
+                              "in_reply_to": r.get("in_reply_to"),
+                              "confidence": r.get("confidence", "HIGH"),
+                              "note": "same email thread (RFC headers, not subject)"},
+                             True, "email_threads") for r in store.replies_for(fid, limit=limit)]
+        except Exception:
+            return []
 
     def _semantic(self, fid: int, limit: int) -> list[Relation]:
         try:

@@ -84,16 +84,17 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | X2 | PDF | A | `pdf_extractor` | IMPLEMENTED | yes | yes | — | P0 | CURRENT | KEEP |
 | X3 | DOCX/DOC/XLSX/XLS/PPTX/PPT | A | `office_extractor` | IMPLEMENTED | yes | yes | limited fidelity on legacy `.doc/.xls/.ppt` | P1 | CURRENT | IMPROVE |
 | X4 | ODT/ODS/ODP | A | `odf_extractor`, `enhanced_extractor` | IMPLEMENTED | yes | yes | — | P1 | CURRENT | KEEP |
-| X5 | RTF | A | `enhanced_extractor` | PARTIAL | partial | no | unreliable | P2 | M017 | COMPLETE |
-| X6 | Images + OCR | A | `ocr.py` | IMPLEMENTED (opt-in `PIS_OCR_ENABLED`) | yes | partial | disabled by default; CPU/GPU cost | P1 | M017 | IMPROVE |
-| X7 | Email `.eml`/`.msg` | A | `enhanced_extractor` | PARTIAL | partial | no | attachments/metadata shallow | P1 | M017 | COMPLETE |
-| X8 | PST/OST | A | — | PNI | no | no | deps commented out | P1 | M017 | IMPLEMENT |
+| X5 | RTF | A | `legacy_extractor` (unrtf/LibreOffice) | IMPLEMENTED (M017) | yes | yes | bounded temp conversion | P2 | M017 | DONE |
+| X6 | Images + OCR | A | `ocr.py` (hardened) | IMPLEMENTED (opt-in `PIS_OCR_ENABLED`) | yes | yes | installed-language detection, orientation, preprocessing, bounded | P1 | M017 | DONE |
+| X7 | Email `.eml`/`.msg` | A | `email_extractor` (+ native CFB for MSG) | IMPLEMENTED (M017) | yes | yes | metadata + body + attachment metadata + threading | P1 | M017 | DONE |
+| X8 | PST/OST | A | — | EXTERNAL_TOOL_REQUIRED | no | no | needs readpst/libpff or pypff; documented, not faked | P1 | M017 | DEFER |
 | X9 | WordPerfect / legacy office | C | — | PNI | no | no | very low value now | P3 | BACKLOG | DROP |
 | X10 | Archives + nested | B | `archives/*` | IAI | yes | yes | — | P1 | CURRENT | KEEP |
 | X11 | Corrupt/encrypted/oversized archives | B | `archives/limits.py`, statuses | IAI | yes | yes | — | P1 | CURRENT | KEEP |
 | X12 | Oversized file handling | A | `scanner/models.py` limits | IMPLEMENTED | yes | yes | — | P1 | CURRENT | KEEP |
-| X13 | Error/review queue for bad files | A | `extraction_state` | PARTIAL | partial | no | no UI queue | P2 | M017 | IMPROVE |
+| X13 | Error/review queue for bad files | A | `ingest.queue_store` + Ingestion UI | IMPLEMENTED (M017) | yes | yes | taxonomy, bounded retry, capability view | P2 | M017 | DONE |
 | X14 | "48+ formats" | A | union of extractors (~50 ext) | IMPLEMENTED | yes | partial | claim roughly holds | P2 | CURRENT | KEEP |
+| X15 | Legacy Office (doc/xls/ppt) + EPUB + CHM | A | `legacy_extractor`/`epub_extractor`/`chm_extractor` | IMPLEMENTED (M017) | yes | yes | layered native→tool→explicit status | P2 | M017 | DONE |
 
 ### Intelligence
 
