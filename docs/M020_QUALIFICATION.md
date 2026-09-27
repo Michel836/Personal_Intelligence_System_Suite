@@ -3,8 +3,9 @@
 **Status:** QUALIFIED (local, bounded, evidence-backed)
 **Branch:** `feat/m001-validation-harness` (no push)
 **Base HEAD:** `8415a19`
-**Evidence:** `.validation/20260927T170844Z/` (`validation.json` binds the complete
-validated state) and `/home/chu/.pis-trials/m020/evidence/`.
+**Evidence:** the most recent `.validation/<UTC run>/` (its `validation.json`
+binds the complete clean-tree validated state) and
+`/home/chu/.pis-trials/m020/evidence/`.
 
 ## Scope
 
