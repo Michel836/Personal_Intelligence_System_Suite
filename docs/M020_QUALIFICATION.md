@@ -107,7 +107,7 @@ was 0.014–0.13 s and payloads stayed below 1 MB at the default point limits.
 
 | Gate | Result | Note |
 |---|---|---|
-| pytest | PASS | **708 passed, 5 skipped** (713 collected; baseline 653) |
+| pytest | PASS | **709 passed, 5 skipped** (714 collected; baseline 653) |
 | audit / compileall / diff-check | PASS | |
 | ruff | FAIL (baseline) | **6998 = baseline, 0 new** |
 | mypy | FAIL (baseline) | **1135 ≤ baseline 1137, 0 new** |
