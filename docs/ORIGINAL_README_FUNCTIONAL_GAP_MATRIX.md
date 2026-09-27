@@ -107,15 +107,15 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | A6 | Language detection | B | — | PNI | no | no | `langdetect` in requirements only | P2 | M015 | IMPLEMENT |
 | A7 | Categorization / auto-classification | A | `ui/intelligence.generate_auto_tags` | PARTIAL | no | no | heuristic, not persisted classes | P2 | M015 | COMPLETE |
 | A8 | Entity extraction (spaCy) | B | `core/models.Entity` (unused) | PNI | no | no | model exists, no NLP pipeline | P2 | M015 | IMPLEMENT |
-| A9 | Duplicate detection (exact) | B | `postgres_database.find_exact_duplicates`; `ui/intelligence` heuristic | PARTIAL | no | no | canonical SQLite path lacks it | P1 | M014 | COMPLETE |
-| A10 | Near-duplicate (MinHash/pgvector) | B | `postgres_database.find_near_duplicates` | PARTIAL/LEGACY | no | no | non-canonical, needs Postgres | P2 | M014 | COMPLETE |
-| A11 | Version tracking | B | `ui/intelligence._find_version_files` | PARTIAL | no | no | filename heuristic only | P2 | M014 | COMPLETE |
-| A12 | Relationship mapping | B | `ui/intelligence`, `legal_search.find_related_documents` | PARTIAL | no | no | no persisted graph | P2 | M016 | COMPLETE |
+| A9 | Duplicate detection (exact) | B | `dedup.exact.ExactDuplicateEngine` (SHA-256 `content_hashes`) | IMPLEMENTED (M014) | yes | yes | size-first incremental hashing; 72,268 groups / 57.9 GB on 303k corpus | P1 | M014 | DONE |
+| A10 | Near-duplicate (MinHash/pgvector) | B | `dedup.near.NearDuplicateEngine` (hyperplane LSH + semantic confirm) | IMPLEMENTED (M014) | yes | yes | bounded, no O(N²); pgvector still an option >100k | P2 | M014 | DONE |
+| A11 | Version tracking | B | `dedup.versions.VersionTracker` (`version_families`) | IMPLEMENTED (M014) | yes | yes | explicit-marker confidence; chronology never invented | P2 | M014 | DONE |
+| A12 | Relationship mapping | B | `dedup.related.RelatedDocuments` (+ exact/near/version markers) | IMPLEMENTED (M014) | yes | yes | suggestions only, no destructive grouping | P2 | M014 | DONE |
 | A13 | Clustering (HDBSCAN/K-means) | B | — | PNI | no | no | dep declared only | P3 | M020 | IMPLEMENT |
 | A14 | Topic modeling (BERTopic) | B | — | PNI | no | no | — | P3 | M020 | IMPLEMENT |
-| A15 | Similar-document search | A | `semantic_search.find_similar_documents` | IMPLEMENTED | partial | yes | not surfaced as page | P2 | M014 | IMPROVE |
+| A15 | Similar-document search | A | `dedup.related.RelatedDocuments` + `semantic_search.find_similar_documents` | IMPLEMENTED (M014) | yes | yes | related panel in Duplicates page | P2 | M014 | DONE |
 | A16 | Vision (CLIP/LLaVA) | B/C | — | PNI | no | no | `llava` config placeholder | P3 | BACKLOG | IMPLEMENT |
-| A17 | Reranking (cross-encoder) | B | — | PNI | no | no | cross-encoder cached but unused | P2 | M014 | IMPLEMENT |
+| A17 | Reranking (cross-encoder) | B | `dedup.rerank` (RRF fusion + exact-match boost) | IMPLEMENTED (M014) | yes | yes | transparent RRF; lexical fallback preserved | P2 | M014 | DONE |
 | A18 | Agentic behavior | C | — (MCP tools only) | PNI | no | no | — | P3 | BACKLOG | DROP |
 | A19 | MCP server | B | `mcp_server.py` | IMPLEMENTED | yes | partial | 3 read-only tools | P2 | CURRENT | KEEP |
 | A20 | Contextual intelligence / recommendations | A | `ui/intelligence.py` | PARTIAL | no | no | heuristic; not wired to a page | P2 | M020 | IMPROVE |
