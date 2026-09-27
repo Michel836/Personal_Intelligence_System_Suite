@@ -20,9 +20,9 @@ from .embeddings import EmbeddingGenerator
 class SemanticSearchEngine:
     """Semantic search engine for intelligent document retrieval."""
     
-    def __init__(self, db: Optional[DatabaseManager] = None):
+    def __init__(self, db: Optional[DatabaseManager] = None, embedding_gen=None):
         self.db = db or DatabaseManager()
-        self.embedding_gen = EmbeddingGenerator()
+        self.embedding_gen = embedding_gen if embedding_gen is not None else self._resolve_embedding_generator()
         
         # LRU cache for embeddings (max 10,000 embeddings ~ 1GB memory)
         self.embeddings_cache = LRUCache(maxsize=10000)
@@ -39,6 +39,25 @@ class SemanticSearchEngine:
         self._store_lock = threading.RLock()
 
         logger.info(f"SemanticSearchEngine initialized. Embeddings available: {self.embedding_gen.is_available()}")
+
+    @staticmethod
+    def _resolve_embedding_generator():
+        """Return the configured embedding generator.
+
+        The proven local ``EmbeddingGenerator`` is used unless the router selects
+        a *remote* embedding provider (PIS_AI_MODE/PIS_EMBEDDING_BACKEND +
+        PIS_API_* + a policy that permits extracted text). This keeps the local
+        store namespace and behaviour unchanged by default.
+        """
+        try:
+            from ..ai.providers.service import get_ai_service
+
+            override = get_ai_service().remote_embedding_generator()
+            if override is not None:
+                return override
+        except Exception as exc:  # noqa: BLE001 - degrade to the local path
+            logger.debug(f"AI service unavailable, using local embeddings: {exc}")
+        return EmbeddingGenerator()
 
     def _get_store(self):
         """Return the persistent matrix store for the active embedding model."""
@@ -206,11 +225,18 @@ class SemanticSearchEngine:
             logger.warning("Semantic search not available - falling back to regular search")
             return self.db.search_files(query=params.query, limit=params.limit)
 
+        from ..ai.providers.base import AIProviderError
+
         # Refresh only changed documents, then serve from the store under a lock
         # so a concurrent refresh cannot expose a half-updated matrix.
         with self._store_lock:
-            store = self._get_store()
-            self._refresh_semantic(store, model_key=store.model_key, dim=store.dim)
+            try:
+                store = self._get_store()
+                self._refresh_semantic(store, model_key=store.model_key, dim=store.dim)
+            except AIProviderError as exc:
+                # A remote provider failed: degrade to lexical search, never crash.
+                logger.warning(f"semantic refresh unavailable ({exc}); using lexical search")
+                return self.db.search_files(query=params.query, limit=params.limit)
             generation = self.db.semantic_generation()
             cache_key = (params.query, params.limit, params.similarity_threshold, generation)
             with self.query_cache_lock:

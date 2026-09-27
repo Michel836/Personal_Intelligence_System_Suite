@@ -272,6 +272,14 @@ class UnifiedDashboard:
     def _render_settings_tab(self):
         """Render settings and preferences tab."""
         st.subheader("⚙️ System Settings")
+
+        # AI backend status: mode, providers, policy. Never shows secrets.
+        try:
+            from src.ui.ai_status import render_ai_status
+
+            render_ai_status()
+        except Exception as exc:  # noqa: BLE001 - status must never break the UI
+            st.caption(f"AI status unavailable: {exc}")
         
         # Workspace management
         st.write("**🏢 Workspace Management**")

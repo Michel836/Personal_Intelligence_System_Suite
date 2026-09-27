@@ -63,17 +63,25 @@ class ChatEngine:
         db: Optional[DatabaseManager] = None
     ):
         from ..core.ai_config import model_for
-        self.model_name = model_name or model_for("interactive_chat")
+        from ..ai.providers.service import get_ai_service
+
         self.db = db or DatabaseManager()
         self.semantic_search = SemanticSearchEngine(self.db)
-        
+        self._service = get_ai_service()
+        self._llm = self._service.llm(content_level="text")
+        if model_name and hasattr(self._llm, "model"):
+            # Explicit model override; otherwise the configured provider model wins.
+            self._llm.model = model_name  # type: ignore[attr-defined]
+        info = self._llm.model_info()
+        self.model_name = model_name or info.model or model_for("interactive_chat")
+
         # Conversation history
         self.conversation_history = []
-        
-        # Fallback to simple chat if Ollama not available
+
+        # Fallback to simple chat when no LLM provider is available.
         self.simple_fallback = None
-        if not OLLAMA_AVAILABLE or not self._test_ollama_connection():
-            logger.info("Using SimpleChatEngine as fallback")
+        if not self._llm.is_available():
+            logger.info("No LLM provider available - using SimpleChatEngine fallback")
             self.simple_fallback = SimpleChatEngine(self.db)
         
         # System prompt
@@ -96,15 +104,46 @@ Guidelines:
 - Use French when the user speaks French, English otherwise
 """
         
-        if OLLAMA_AVAILABLE:
-            self._check_model_availability()
-        else:
-            logger.error("Ollama not available. Install with: pip install ollama")
-    
     def is_available(self) -> bool:
         """Check if conversational AI is available."""
         # Always return True since we have SimpleChatEngine as fallback
         return True
+
+    def _select_llm_for_content(self):
+        """Pick an LLM provider and whether document body text may be sent.
+
+        Local providers may always receive content. Remote providers receive body
+        text only when the remote-content policy allows it; otherwise a
+        metadata-only remote selection is used (filenames/paths only).
+        """
+        policy = self._service.config.content_policy
+        llm = self._service.llm(content_level="text")
+        if llm.is_available() and not (llm.remote and not policy.allows_extracted_text):
+            return llm, True
+        return self._service.llm(content_level="metadata"), False
+
+    def get_model_status(self) -> Dict[str, Any]:
+        """Compact provider status for the UI/diagnostics (never exposes keys)."""
+        try:
+            status = self._service.status()
+            llm = status.get("llm", {})
+            cfg = status.get("config", {})
+            return {
+                # Back-compat keys used by the dashboard.
+                "available": bool(llm.get("available")),
+                "current_model": llm.get("model"),
+                # Rich diagnostics.
+                "provider": llm.get("provider"),
+                "remote": llm.get("remote"),
+                "mode": cfg.get("mode"),
+                "content_policy": cfg.get("content_policy"),
+                "hardware_tier": status.get("hardware_tier"),
+                "embeddings": status.get("embeddings"),
+                "config": cfg,
+                "usage": status.get("usage"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {"available": False, "current_model": None, "error": str(exc)}
     
     def _test_ollama_connection(self) -> bool:
         """Test if Ollama is actually accessible."""
@@ -159,49 +198,43 @@ Guidelines:
     def chat(self, user_message: str, search_context: bool = True) -> Dict[str, Any]:
         """Have a conversation with the AI about documents."""
         
-        # Use simple fallback if Ollama not available
-        if self.simple_fallback:
-            return self.simple_fallback.chat(user_message, search_context)
-        
         start_time = time.time()
         
         try:
+            llm, include_content = self._select_llm_for_content()
+            if not llm.is_available():
+                if self.simple_fallback:
+                    return self.simple_fallback.chat(user_message, search_context)
+                return {
+                    "response": "No AI provider is available for the current mode and policy.",
+                    "error": "provider_unavailable",
+                    "sources": [],
+                }
+
             # Search for relevant documents if requested
             context_documents = []
             if search_context:
                 context_documents = self._search_relevant_documents(user_message)
-            
-            # Build conversation context
-            conversation_context = self._build_context(user_message, context_documents)
-            
-            # Generate AI response with timeout. ``think`` is only supported by
-            # newer ollama clients, so it is added conditionally to stay
-            # compatible with the pinned dependency.
-            from ..core.ai_config import llm_think
-            chat_kwargs = {
-                "model": self.model_name,
-                "messages": [
-                    {"role": "system", "content": self.system_prompt},
-                    *self.conversation_history,
-                    {"role": "user", "content": conversation_context}
-                ],
-                "options": {
-                    "temperature": 0.7,
-                    "top_p": 0.9,
-                    # Ollama ignores ``max_tokens``; ``num_predict`` is the real
-                    # bound. Without it large QUALITY models generate past the
-                    # 45s chat timeout. num_ctx matches the locked 4096 profile.
-                    "max_tokens": 1000,
-                    "num_predict": _llm_num_predict(),
-                    "num_ctx": _llm_num_ctx(),
-                    "timeout": 30.0  # 30 second timeout
-                },
-            }
-            if _ollama_supports_think():
-                chat_kwargs["think"] = llm_think()
-            response = ollama.chat(**chat_kwargs)
-            
-            ai_response = response['message']['content']
+
+            # Build conversation context. Body text is only included when the
+            # selected provider is allowed to receive it (local always; remote
+            # only per the remote-content policy).
+            conversation_context = self._build_context(
+                user_message, context_documents, include_content=include_content
+            )
+
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                *self.conversation_history,
+                {"role": "user", "content": conversation_context},
+            ]
+            result = llm.chat(messages, options={
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "num_predict": _llm_num_predict(),
+                "num_ctx": _llm_num_ctx(),
+            })
+            ai_response = result.text
             
             # Update conversation history
             self.conversation_history.append({"role": "user", "content": user_message})
@@ -217,7 +250,8 @@ Guidelines:
                 "response": ai_response,
                 "sources": context_documents,
                 "response_time": response_time,
-                "model": self.model_name,
+                "model": result.model,
+                "provider": result.provider,
                 "context_used": len(context_documents) > 0
             }
         
@@ -259,9 +293,15 @@ Guidelines:
     def _build_context(
         self, 
         user_message: str, 
-        documents: List[Dict[str, Any]]
+        documents: List[Dict[str, Any]],
+        include_content: bool = True,
     ) -> str:
-        """Build context for the AI including relevant documents."""
+        """Build context for the AI including relevant documents.
+
+        ``include_content`` gates extracted body text: when False (e.g. a
+        remote provider under a metadata-only policy) only filenames/paths and
+        metadata are included.
+        """
         
         context = f"User question: {user_message}\n\n"
         
@@ -275,7 +315,7 @@ Guidelines:
                 context += f"- Type: {doc.get('file_type', 'unknown')}\n"
                 context += f"- Size: {doc.get('size_bytes', 0) / (1024*1024):.2f} MB\n"
                 
-                if doc.get('content_text'):
+                if include_content and doc.get('content_text'):
                     # Include a relevant excerpt
                     content = doc['content_text']
                     if len(content) > 500:
