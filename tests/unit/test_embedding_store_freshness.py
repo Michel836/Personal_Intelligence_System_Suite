@@ -59,15 +59,35 @@ def test_prune_all_empties_store(tmp_path) -> None:
     assert store.search(np.ones(8, dtype=np.float32), 5) == []
 
 
-def test_legacy_store_without_hashes_loads_and_refreshes(tmp_path) -> None:
+def test_legacy_v1_store_is_migrated(tmp_path) -> None:
     store = _store(tmp_path)
-    store.save([1, 2], np.ones((2, 8), dtype=np.float32))
-    # Simulate a legacy meta.json without content_hashes.
+    store.save([1, 2], np.ones((2, 8), dtype=np.float32), hashes=["a", "b"])
+    # Rewrite as a v1 meta.json (ids/hashes inline) and drop the sidecars.
     import json
 
     meta = json.loads((store.dir / "meta.json").read_text())
-    del meta["content_hashes"]
+    meta.update({"version": 1, "ids": [1, 2], "content_hashes": ["a", "b"],
+                 "capacity": store.meta.capacity})
     (store.dir / "meta.json").write_text(json.dumps(meta))
+    (store.dir / "ids.npy").unlink()
+    (store.dir / "hashes.npy").unlink()
+
+    reloaded = _store(tmp_path)
+    assert reloaded.load() is True
+    assert reloaded.hash_map() == {1: "a", 2: "b"}
+    assert (store.dir / "ids.npy").exists() and (store.dir / "hashes.npy").exists()
+
+
+def test_legacy_store_without_hashes_migrates_to_unknown(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.save([1, 2], np.ones((2, 8), dtype=np.float32))
+    import json
+
+    meta = json.loads((store.dir / "meta.json").read_text())
+    meta.update({"version": 1, "ids": [1, 2], "capacity": store.meta.capacity})
+    (store.dir / "meta.json").write_text(json.dumps(meta))
+    (store.dir / "ids.npy").unlink()
+    (store.dir / "hashes.npy").unlink()
 
     reloaded = _store(tmp_path)
     assert reloaded.load() is True

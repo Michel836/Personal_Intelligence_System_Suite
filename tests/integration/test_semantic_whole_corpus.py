@@ -1,4 +1,8 @@
-"""Regression: semantic search must search the whole corpus, not limit*5 (M009H.3)."""
+"""Regression: semantic search must search the whole corpus, not limit*5 (M009H.3).
+
+M011: documents are seeded through the canonical content writer so the
+incremental dirty-state refresh (not a corpus-wide scan) finds them.
+"""
 from __future__ import annotations
 
 import numpy as np
@@ -15,6 +19,8 @@ class _FakeEmbeddings:
 
     def __init__(self) -> None:
         self.embedding_dim = len(self.KEYWORDS)
+        self.model_key = "fake"
+        self.model_name = "fake/model"
 
     def is_available(self) -> bool:
         return True
@@ -42,18 +48,29 @@ class _FakeEmbeddings:
         return None
 
 
+def _seed_docs(db: DatabaseManager, count: int = 30, relevant_id: int = 25) -> None:
+    with db.get_connection() as conn:
+        for i in range(count):
+            conn.execute(
+                "INSERT INTO files (id, path, filename, size_bytes, modified_at, "
+                "state, document_kind) VALUES (?, ?, ?, 10, '2026-01-01', 'ACTIVE', 'PHYSICAL_FILE')",
+                (i, f"/corpus/doc{i}.txt", f"doc{i}.txt"),
+            )
+        conn.commit()
+    for i in range(count):
+        text = "beta gamma delta filler content " * 3
+        if i == relevant_id:
+            text = "alpha content here " * 5
+        db.update_content(i, text)
+
+
 def test_relevant_doc_outside_old_cap_is_found(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ss, "EmbeddingGenerator", _FakeEmbeddings)
     monkeypatch.setenv("PIS_EMBEDDING_STORE_DIR", str(tmp_path / "store1"))
 
-    docs = []
-    for i in range(30):
-        text = "beta gamma delta filler content" if i != 25 else "alpha content here "
-        docs.append({"id": i, "content_text": text})
-
     db = DatabaseManager(tmp_path / "sem.db")
+    _seed_docs(db)
     engine = ss.SemanticSearchEngine(db)
-    monkeypatch.setattr(engine, "_get_documents_with_content", lambda limit=None: docs)
 
     results = engine.semantic_search("alpha", limit=2)
 

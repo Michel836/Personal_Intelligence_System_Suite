@@ -1,5 +1,6 @@
 """Embedding generation for semantic search."""
 
+import os
 import numpy as np
 import time
 from pathlib import Path
@@ -56,7 +57,9 @@ class EmbeddingGenerator:
         self.embedding_dim = None
 
         # Cache namespaced by model so vectors from different spaces never mix.
-        self.cache_dir = Path("data/cache/embeddings") / self.model_key
+        # Honour an explicit path so trials/tests never write into the repo.
+        cache_base = os.environ.get("PIS_EMBEDDING_CACHE_DIR")
+        self.cache_dir = (Path(cache_base) if cache_base else Path("data/cache/embeddings")) / self.model_key
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         if SENTENCE_TRANSFORMERS_AVAILABLE:

@@ -174,6 +174,9 @@ class DatabaseManager:
             # Archive container / virtual-member support (additive, non-destructive)
             self._ensure_archives(conn)
 
+            # Incremental semantic change-tracking state (M011, additive)
+            self._ensure_semantic_state(conn)
+
             # Stats table
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS scan_stats (
@@ -522,6 +525,7 @@ class DatabaseManager:
                     ),
                 )
                 ids.append(1)
+            self._set_semantic_sweep_due_conn(conn, True)
             conn.commit()
         return ids
 
@@ -550,6 +554,8 @@ class DatabaseManager:
                         "WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ? AND path = ?",
                         (scan_id, parent_id, path),
                     )
+            if missing:
+                self._set_semantic_sweep_due_conn(conn, True)
             conn.commit()
         return {"missing": len(missing), "seen": len(seen)}
 
@@ -561,6 +567,7 @@ class DatabaseManager:
                 "WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ? AND state = 'ACTIVE'",
                 (parent_id,),
             )
+            self._set_semantic_sweep_due_conn(conn, True)
             conn.commit()
             return cur.rowcount or 0
 
@@ -577,8 +584,281 @@ class DatabaseManager:
                 "WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ? AND state = 'MISSING'",
                 (parent_id,),
             )
+            self._set_semantic_sweep_due_conn(conn, True)
             conn.commit()
             return cur.rowcount or 0
+
+    # --- Incremental semantic change tracking (M011) ----------------------
+    #
+    # Embedding freshness is decided by an explicit per-document state row
+    # instead of re-hashing the whole corpus at query time. Content writes mark
+    # rows dirty; losing content or lifecycle marks them for pruning. The
+    # semantic layer embeds only dirty rows and removes pruned rows. A global
+    # generation counter makes query-cache invalidation deterministic.
+    SEMANTIC_MIN_CONTENT = 50
+
+    def _ensure_semantic_state(self, conn) -> None:
+        """Create the semantic state tables (additive; never destructive)."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS semantic_state (
+                file_id INTEGER PRIMARY KEY,
+                dirty INTEGER NOT NULL DEFAULT 1,
+                prune INTEGER NOT NULL DEFAULT 0,
+                content_version TEXT,
+                embedded_version TEXT,
+                model_key TEXT,
+                dim INTEGER,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_semantic_dirty ON semantic_state(dirty, prune)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_semantic_prune ON semantic_state(prune)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_semantic_model ON semantic_state(model_key)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS semantic_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        conn.execute("INSERT OR IGNORE INTO semantic_meta(key, value) VALUES ('generation', '0')")
+        # First run (or a fresh DB) must reconcile once before hot queries.
+        conn.execute("INSERT OR IGNORE INTO semantic_meta(key, value) VALUES ('sweep_due', '1')")
+        conn.commit()
+
+    @staticmethod
+    def _bump_semantic_generation(conn) -> int:
+        conn.execute(
+            "UPDATE semantic_meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) "
+            "WHERE key = 'generation'"
+        )
+        row = conn.execute("SELECT value FROM semantic_meta WHERE key = 'generation'").fetchone()
+        return int(row[0]) if row else 0
+
+    def bump_semantic_generation(self) -> int:
+        """Increment and return the global semantic generation counter."""
+        with self.get_connection() as conn:
+            gen = self._bump_semantic_generation(conn)
+            conn.commit()
+            return gen
+
+    def semantic_generation(self) -> int:
+        """Return the current global semantic generation counter."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT value FROM semantic_meta WHERE key = 'generation'").fetchone()
+            return int(row[0]) if row else 0
+
+    @staticmethod
+    def _set_semantic_sweep_due_conn(conn, due: bool = True) -> None:
+        conn.execute(
+            "INSERT OR REPLACE INTO semantic_meta(key, value) VALUES ('sweep_due', ?)",
+            ("1" if due else "0",),
+        )
+
+    def mark_semantic_sweep_due(self) -> None:
+        """Request a reconciliation pass before the next semantic refresh."""
+        with self.get_connection() as conn:
+            self._set_semantic_sweep_due_conn(conn, True)
+            conn.commit()
+
+    def semantic_sweep_due(self) -> bool:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT value FROM semantic_meta WHERE key = 'sweep_due'").fetchone()
+            return bool(row and row[0] == "1")
+
+    def reconcile_semantic_state(self) -> int:
+        """Rare reconciliation that restores flag invariants.
+
+        Seeds state rows for content-bearing files that have none (once), then
+        converts lifecycle/content loss into ``prune`` and marks unknown-version
+        rows dirty. The flag UPDATEs use an indexed EXISTS against ``files`` so
+        the sweep costs O(tracked rows), not O(all metadata rows).
+        """
+        changed = 0
+        with self.get_connection() as conn:
+            done = conn.execute(
+                "SELECT value FROM semantic_meta WHERE key = 'sweep_done'"
+            ).fetchone()
+            if not (done and done[0] == "1"):
+                cur = conn.execute(
+                    """INSERT INTO semantic_state(file_id, dirty, content_version)
+                       SELECT f.id, 1, NULL FROM files f
+                       WHERE f.content_extracted = 1 AND f.content_text IS NOT NULL
+                         AND length(f.content_text) > ?
+                         AND COALESCE(f.state, 'ACTIVE') = 'ACTIVE'
+                         AND NOT EXISTS (SELECT 1 FROM semantic_state s WHERE s.file_id = f.id)""",
+                    (self.SEMANTIC_MIN_CONTENT,),
+                )
+                changed += int(cur.rowcount or 0)
+                conn.execute("INSERT OR REPLACE INTO semantic_meta(key, value) VALUES ('sweep_done', '1')")
+            cur = conn.execute(
+                """UPDATE semantic_state SET prune = 1, dirty = 0, updated_at = CURRENT_TIMESTAMP
+                   WHERE embedded_version IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM files f WHERE f.id = semantic_state.file_id
+                         AND (COALESCE(f.state, 'ACTIVE') != 'ACTIVE'
+                              OR COALESCE(f.content_extracted, 0) != 1
+                              OR f.content_text IS NULL
+                              OR length(f.content_text) <= ?))""",
+                (self.SEMANTIC_MIN_CONTENT,),
+            )
+            changed += int(cur.rowcount or 0)
+            cur = conn.execute(
+                """UPDATE semantic_state SET dirty = 1, updated_at = CURRENT_TIMESTAMP
+                   WHERE content_version IS NULL AND prune = 0 AND EXISTS (
+                       SELECT 1 FROM files f WHERE f.id = semantic_state.file_id
+                         AND COALESCE(f.state, 'ACTIVE') = 'ACTIVE'
+                         AND f.content_extracted = 1 AND f.content_text IS NOT NULL
+                         AND length(f.content_text) > ?)""",
+                (self.SEMANTIC_MIN_CONTENT,),
+            )
+            changed += int(cur.rowcount or 0)
+            self._set_semantic_sweep_due_conn(conn, False)
+            if changed:
+                self._bump_semantic_generation(conn)
+            conn.commit()
+        return changed
+
+    @staticmethod
+    def _mark_semantic_dirty_conn(conn, file_ids) -> None:
+        ids = [int(i) for i in file_ids if i is not None]
+        if not ids:
+            return
+        conn.executemany(
+            """INSERT INTO semantic_state(file_id, dirty, prune, content_version, updated_at)
+               VALUES (?, 1, 0, NULL, CURRENT_TIMESTAMP)
+               ON CONFLICT(file_id) DO UPDATE SET
+                   dirty = 1, prune = 0, content_version = NULL, updated_at = CURRENT_TIMESTAMP""",
+            [(i,) for i in ids],
+        )
+        DatabaseManager._bump_semantic_generation(conn)
+
+    def mark_semantic_dirty(self, file_ids) -> None:
+        """Flag documents for (re-)embedding; provenance is re-derived later."""
+        with self.get_connection() as conn:
+            self._mark_semantic_dirty_conn(conn, file_ids)
+            conn.commit()
+
+    def mark_semantic_prune(self, file_ids) -> None:
+        """Flag documents whose vectors must be removed from the store."""
+        ids = [int(i) for i in file_ids if i is not None]
+        if not ids:
+            return
+        with self.get_connection() as conn:
+            conn.executemany(
+                """INSERT INTO semantic_state(file_id, dirty, prune, updated_at)
+                   VALUES (?, 0, 1, CURRENT_TIMESTAMP)
+                   ON CONFLICT(file_id) DO UPDATE SET
+                       prune = 1, dirty = 0, updated_at = CURRENT_TIMESTAMP""",
+                [(i,) for i in ids],
+            )
+            self._bump_semantic_generation(conn)
+            conn.commit()
+
+    def mark_semantic_embedded(self, entries, *, model_key: str, dim: int) -> None:
+        """Record that ``(file_id, content_version)`` pairs are current in the store."""
+        rows = [(int(i), str(v), str(v), model_key, int(dim)) for i, v in entries]
+        if not rows:
+            return
+        with self.get_connection() as conn:
+            conn.executemany(
+                """INSERT INTO semantic_state(
+                       file_id, dirty, prune, content_version, embedded_version,
+                       model_key, dim, updated_at)
+                   VALUES (?, 0, 0, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(file_id) DO UPDATE SET
+                       dirty = 0, prune = 0,
+                       content_version = excluded.content_version,
+                       embedded_version = excluded.embedded_version,
+                       model_key = excluded.model_key, dim = excluded.dim,
+                       updated_at = CURRENT_TIMESTAMP""",
+                rows,
+            )
+            self._bump_semantic_generation(conn)
+            conn.commit()
+
+    def mark_semantic_pruned(self, file_ids) -> None:
+        """Record that vectors were removed (no content provenance remains)."""
+        ids = [int(i) for i in file_ids if i is not None]
+        if not ids:
+            return
+        with self.get_connection() as conn:
+            conn.executemany(
+                """UPDATE semantic_state
+                   SET prune = 0, dirty = 0, content_version = NULL,
+                       embedded_version = NULL, model_key = NULL, dim = NULL,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE file_id = ?""",
+                [(i,) for i in ids],
+            )
+            self._bump_semantic_generation(conn)
+            conn.commit()
+
+    def reset_semantic_for_rebuild(self) -> int:
+        """Mark every tracked row dirty after store loss/corruption.
+
+        The embedding store can be rebuilt at any time; the DB must then treat
+        all previously "current" vectors as missing so they are re-embedded.
+        """
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                """UPDATE semantic_state
+                   SET dirty = 1, prune = 0, content_version = NULL,
+                       embedded_version = NULL, model_key = NULL, dim = NULL,
+                       updated_at = CURRENT_TIMESTAMP"""
+            )
+            self._bump_semantic_generation(conn)
+            conn.commit()
+            return int(cur.rowcount or 0)
+
+    def ensure_semantic_state_initialized(self) -> int:
+        """Backward-compatible alias for the one-time reconciliation sweep."""
+        return self.reconcile_semantic_state()
+
+    def semantic_dirty_batch(self, *, model_key: str, dim: int, limit: int = 256):
+        """Return content-bearing ACTIVE rows explicitly flagged dirty.
+
+        Index-friendly (``dirty=1``): reconciliation keeps the flag accurate, so
+        a no-change refresh scans no corpus rows.
+        """
+        sql = """
+            SELECT f.id, f.content_text, s.content_version, s.embedded_version,
+                   s.model_key, s.dim
+            FROM semantic_state s
+            JOIN files f ON f.id = s.file_id
+            WHERE s.dirty = 1 AND s.prune = 0
+              AND COALESCE(f.state, 'ACTIVE') = 'ACTIVE'
+              AND f.content_extracted = 1
+              AND f.content_text IS NOT NULL
+              AND length(f.content_text) > ?
+            ORDER BY f.id ASC
+            LIMIT ?
+        """
+        with self.get_connection() as conn:
+            return [dict(r) for r in conn.execute(
+                sql, (self.SEMANTIC_MIN_CONTENT, int(limit))).fetchall()]
+
+    def semantic_prune_batch(self, limit: int = 256) -> List[int]:
+        """Return file ids explicitly flagged for vector removal."""
+        with self.get_connection() as conn:
+            return [int(r[0]) for r in conn.execute(
+                "SELECT file_id FROM semantic_state WHERE prune = 1 LIMIT ?",
+                (int(limit),)).fetchall()]
+
+    def get_documents_by_ids(self, file_ids) -> List[Dict[str, Any]]:
+        """Fetch ACTIVE, content-bearing rows for the given ids (bounded)."""
+        ids = [int(i) for i in file_ids]
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        sql = f"""
+            SELECT * FROM files
+            WHERE id IN ({placeholders})
+              AND COALESCE(state, 'ACTIVE') = 'ACTIVE'
+              AND content_extracted = 1
+              AND content_text IS NOT NULL
+              AND length(content_text) > ?
+        """
+        with self.get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql, (*ids, self.SEMANTIC_MIN_CONTENT)).fetchall()]
 
     def get_archive_members(
         self, parent_id: int, *, include_missing: bool = False, limit: int = 10000
@@ -603,6 +883,7 @@ class DatabaseManager:
                     "UPDATE files SET content_text = ?, content_extracted = 1, extraction_state = ? WHERE id = ?",
                     (content, state, member_id),
                 )
+                self._mark_semantic_dirty_conn(conn, [member_id])
             else:
                 conn.execute(
                     "UPDATE files SET extraction_state = ? WHERE id = ?", (state, member_id)
@@ -759,6 +1040,9 @@ class DatabaseManager:
         with self.get_connection() as conn:
             renamed = self._associate_renames(conn, run_id)
             missing = self._mark_missing(conn, run_id)
+            # Lifecycle changes may invalidate semantic vectors; reconcile once
+            # before the next semantic refresh (keeps hot queries O(1)).
+            self._set_semantic_sweep_due_conn(conn, True)
             conn.commit()
         return {"run_id": run_id, "renamed": renamed, "missing": missing}
 
@@ -1265,15 +1549,25 @@ class DatabaseManager:
             }
     
     def update_content(self, file_id: int, content: str) -> None:
-        """Update extracted content for a file."""
+        """Update extracted content for a file and flag it for re-embedding."""
         with self.get_connection() as conn:
             conn.execute("""
                 UPDATE files 
-                SET content_text = ?, content_extracted = 1
+                SET content_text = ?, content_extracted = 1, indexed_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (content, file_id))
             
             # The AFTER UPDATE trigger keeps files_fts synchronised.
+            self._mark_semantic_dirty_conn(conn, [file_id])
+            conn.commit()
+
+    def mark_extraction_attempted(self, file_id: int) -> None:
+        """Record a failed/no-content extraction attempt without changing text."""
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE files SET content_extracted = 1, indexed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (file_id,),
+            )
             conn.commit()
     
     def get_unprocessed_documents(self, limit: int = 100) -> List[Dict[str, Any]]:

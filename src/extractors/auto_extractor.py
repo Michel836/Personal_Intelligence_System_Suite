@@ -277,39 +277,25 @@ class AutoExtractor:
         return results
     
     def _extract_and_save(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract content from a file and save to database."""
+        """Extract content from a file and save via the canonical DB writer."""
         file_path = Path(candidate['path'])
         
         try:
             # Perform extraction
             extraction_result = self.extraction_manager.extract_single(file_path)
-            
-            # Save to database
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
+
+            # Persist through DatabaseManager so semantic dirty-state tracking
+            # and the FTS triggers stay in sync (no raw content UPDATE).
+            from ..core.database import DatabaseManager
+
+            db = DatabaseManager(self.db_path)
             if extraction_result.success and extraction_result.content:
-                # Update with extracted content
-                cursor.execute("""
-                    UPDATE files 
-                    SET content_text = ?, content_extracted = 1, indexed_at = ?
-                    WHERE id = ?
-                """, (extraction_result.content, datetime.now().isoformat(), candidate['id']))
-                
+                db.update_content(int(candidate['id']), extraction_result.content)
                 logger.debug(f"Extracted {len(extraction_result.content)} chars from {candidate['filename']}")
             else:
-                # Mark as attempted but failed
-                cursor.execute("""
-                    UPDATE files 
-                    SET content_extracted = 1, indexed_at = ?
-                    WHERE id = ?
-                """, (datetime.now().isoformat(), candidate['id']))
-                
+                db.mark_extraction_attempted(int(candidate['id']))
                 logger.debug(f"Failed to extract content from {candidate['filename']}: {extraction_result.error}")
-            
-            conn.commit()
-            conn.close()
-            
+
             return {
                 'success': extraction_result.success,
                 'content_length': len(extraction_result.content) if extraction_result.content else 0,

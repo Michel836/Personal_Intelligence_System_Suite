@@ -34,6 +34,9 @@ class SemanticSearchEngine:
 
         # Persistent pre-normalized embedding matrix (M009I.1).
         self._store = None
+        # Serialises refresh + store reads so concurrent semantic queries and
+        # concurrent extraction/refresh cannot observe a half-updated matrix.
+        self._store_lock = threading.RLock()
 
         logger.info(f"SemanticSearchEngine initialized. Embeddings available: {self.embedding_gen.is_available()}")
 
@@ -64,13 +67,78 @@ class SemanticSearchEngine:
         """Stable fingerprint of extracted content (detects changed documents)."""
         return hashlib.blake2b(text.encode("utf-8", "ignore"), digest_size=16).hexdigest()
 
-    def _refresh_store(self, store, documents):
-        """Ensure the store covers the current corpus (rebuild/append/prune).
+    def _apply_prune(self, store, batch_size: int) -> int:
+        """Remove store rows for pruned/missing/content-less documents."""
+        total = 0
+        # Compaction is O(store) per call, so use a larger prune batch to keep
+        # the number of passes small even for large deletions.
+        prune_batch = max(int(batch_size), 4096)
+        while True:
+            ids = self.db.semantic_prune_batch(limit=prune_batch)
+            if not ids:
+                break
+            store.remove(ids)
+            self.db.mark_semantic_pruned(ids)
+            total += len(ids)
+            if len(ids) < prune_batch:
+                break
+        return total
 
-        The store is loaded at most once per process. Only genuinely new or
-        *changed* content is embedded (content-hash compare), and rows whose
-        document is no longer present (deleted/MISSING/empty content) are
-        pruned so stale vectors cannot crowd top-k.
+    def _refresh_semantic(self, store, *, model_key: str, dim: int, batch_size: int = 256):
+        """Bring the store up to date with the dirty/prune set only.
+
+        Complexity is O(changed + pruned), not O(corpus): the DB yields only
+        rows whose semantic source changed. Clean marks are written *after* the
+        store write, so a crash mid-refresh leaves rows pending and the next
+        refresh converges (at-least-once, idempotent).
+        """
+        if store.matrix is None and store.meta is None and not store.load():
+            # Missing/corrupt store: every tracked vector must be rebuilt.
+            self.db.reset_semantic_for_rebuild()
+        if self.db.semantic_sweep_due():
+            # Rare O(corpus) reconciliation restores the dirty/prune flags after
+            # scans/archive changes; hot queries stay O(pending).
+            self.db.reconcile_semantic_state()
+        total_pruned = self._apply_prune(store, batch_size)
+        total_embedded = 0
+        while True:
+            dirty = self.db.semantic_dirty_batch(model_key=model_key, dim=dim, limit=batch_size)
+            if not dirty:
+                break
+            versions = []
+            for row in dirty:
+                content = (row.get("content_text") or "").strip()
+                if content:
+                    versions.append((int(row["id"]), content, self._content_hash(content)))
+            if not versions:
+                # Dirty rows without usable content cannot be embedded.
+                self.db.mark_semantic_pruned([int(r["id"]) for r in dirty])
+                total_pruned += len(dirty)
+                continue
+            embeddings = self._embed_texts([c for _, c, _ in versions])
+            ids, matrix, entries = [], [], []
+            for (fid, _content, ver), emb in zip(versions, embeddings, strict=False):
+                if emb is None:
+                    continue
+                ids.append(fid)
+                matrix.append(emb)
+                entries.append((fid, ver))
+            if not entries:
+                # Embedding failed for the whole batch: leave rows dirty and
+                # retry on a later call rather than looping forever.
+                break
+            store.append(ids, np.vstack(matrix), hashes=[v for _, v in entries])
+            self.db.mark_semantic_embedded(entries, model_key=model_key, dim=dim)
+            total_embedded += len(entries)
+            if len(dirty) < batch_size:
+                break
+        return total_embedded, total_pruned
+
+    def _refresh_store(self, store, documents):
+        """Low-level explicit-list upsert (benchmarks/legacy callers only).
+
+        Production search uses :meth:`_refresh_semantic`. This path rebuilds or
+        appends for an explicit document list without consulting dirty state.
         """
         valid = []
         id_map = {}
@@ -88,23 +156,21 @@ class SemanticSearchEngine:
             loaded = True
         if not loaded:
             embeddings = self._embed_texts([t for _, t in valid])
-            pairs = [(i, e, hashes[i]) for (i, _), e in zip(valid, embeddings) if e is not None]
+            pairs = [(i, e, hashes[i]) for (i, _), e in zip(valid, embeddings, strict=False) if e is not None]
             if pairs:
                 store.save([i for i, _, _ in pairs], np.vstack([e for _, e, _ in pairs]),
                            hashes=[h for _, _, h in pairs])
             return id_map
-        # Drop rows for documents that no longer exist before ranking.
         removed = store.prune(set(id_map))
         existing = store.hash_map()
         missing = [(i, t) for i, t in valid if existing.get(i) != hashes[i]]
         if missing:
             embeddings = self._embed_texts([t for _, t in missing])
-            pairs = [(i, e, hashes[i]) for (i, _), e in zip(missing, embeddings) if e is not None]
+            pairs = [(i, e, hashes[i]) for (i, _), e in zip(missing, embeddings, strict=False) if e is not None]
             if pairs:
                 store.append([i for i, _, _ in pairs], np.vstack([e for _, e, _ in pairs]),
                              hashes=[h for _, _, h in pairs])
         if removed or missing:
-            # A changed corpus must not be masked by cached query results.
             with self.query_cache_lock:
                 self.query_cache.clear()
         return id_map
@@ -139,53 +205,50 @@ class SemanticSearchEngine:
         if not self.is_available():
             logger.warning("Semantic search not available - falling back to regular search")
             return self.db.search_files(query=params.query, limit=params.limit)
-        
-        # Create cache key
-        cache_key = (params.query, params.limit, params.similarity_threshold)
-        
-        # Check query cache first
-        with self.query_cache_lock:
-            if cache_key in self.query_cache:
+
+        # Refresh only changed documents, then serve from the store under a lock
+        # so a concurrent refresh cannot expose a half-updated matrix.
+        with self._store_lock:
+            store = self._get_store()
+            self._refresh_semantic(store, model_key=store.model_key, dim=store.dim)
+            generation = self.db.semantic_generation()
+            cache_key = (params.query, params.limit, params.similarity_threshold, generation)
+            with self.query_cache_lock:
+                cached = self.query_cache.get(cache_key)
+            if cached is not None:
                 logger.debug(f"Found cached results for query: '{params.query}'")
-                return self.query_cache[cache_key]
-        
-        logger.info(f"Performing semantic search for: '{params.query}'")
-        
-        # Generate query embedding
-        query_embedding = self.embedding_gen.generate_embedding(params.query)
-        if query_embedding is None:
-            logger.error("Failed to generate query embedding")
-            return []
-        
-        # Whole-corpus retrieval over the persistent pre-normalized matrix.
-        documents = self._get_documents_with_content()
-        if not documents:
-            logger.info("No documents with extracted content found")
-            return []
+                return cached
 
-        store = self._get_store()
-        id_map = self._refresh_store(store, documents)
-        if store.matrix is None:
-            logger.info("No valid document embeddings found")
-            return []
+            if store.matrix is None or store.meta is None or not store.meta.ids:
+                logger.info("No valid document embeddings found")
+                return []
 
-        ranked = store.search(query_embedding, top_k=params.limit)
+            logger.info(f"Performing semantic search for: '{params.query}'")
+            query_embedding = self.embedding_gen.generate_embedding(params.query)
+            if query_embedding is None:
+                logger.error("Failed to generate query embedding")
+                return []
 
-        results = []
-        for doc_id, similarity in ranked:
-            if similarity >= params.similarity_threshold and doc_id in id_map:
-                doc = id_map[doc_id].copy()
-                doc['semantic_similarity'] = similarity
-                doc['search_type'] = 'semantic'
-                results.append(doc)
-        
-        logger.info(f"Found {len(results)} semantically similar documents")
-        
-        # Cache the results
-        with self.query_cache_lock:
-            self.query_cache[cache_key] = results
-        
-        return results
+            # Overfetch so rows filtered by threshold/lifecycle cannot shrink
+            # the returned result count below the requested limit.
+            overfetch = max(int(params.limit) * 4, int(params.limit) + 32)
+            ranked = store.search(query_embedding, top_k=overfetch)
+            docs = {int(d["id"]): d for d in self.db.get_documents_by_ids(
+                [doc_id for doc_id, _ in ranked])}
+            results = []
+            for doc_id, similarity in ranked:
+                if len(results) >= params.limit:
+                    break
+                if similarity >= params.similarity_threshold and doc_id in docs:
+                    doc = docs[doc_id].copy()
+                    doc['semantic_similarity'] = similarity
+                    doc['search_type'] = 'semantic'
+                    results.append(doc)
+
+            logger.info(f"Found {len(results)} semantically similar documents")
+            with self.query_cache_lock:
+                self.query_cache[cache_key] = results
+            return results
     
     def hybrid_search(
         self,

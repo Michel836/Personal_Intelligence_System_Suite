@@ -1,7 +1,8 @@
 """Semantic freshness: changed content re-embeds, MISSING docs cannot surface.
 
 Regression for the M009I review concern that deleted/changed documents could
-leave stale vectors and crowd semantic top-k (M010 scale trial).
+leave stale vectors and crowd semantic top-k. M011 drives changes through the
+canonical write paths so the incremental dirty-state refresh is exercised.
 """
 from __future__ import annotations
 
@@ -9,7 +10,6 @@ import numpy as np
 
 import src.intelligence.semantic_search as ss
 from src.core.database import DatabaseManager
-from src.intelligence.embeddings import EmbeddingGenerator
 
 
 class _FakeEmbeddings:
@@ -45,14 +45,15 @@ class _FakeEmbeddings:
 
 def _seed(db: DatabaseManager, rows):
     with db.get_connection() as conn:
-        for row_id, state, text in rows:
+        for row_id, state, _text in rows:
             conn.execute(
                 "INSERT INTO files (id, path, filename, size_bytes, modified_at, "
-                "content_text, content_extracted, state, document_kind) "
-                "VALUES (?, ?, ?, 10, '2026-01-01', ?, 1, ?, 'PHYSICAL_FILE')",
-                (row_id, f"/corpus/doc{row_id}.txt", f"doc{row_id}.txt", text, state),
+                "state, document_kind) VALUES (?, ?, ?, 10, '2026-01-01', ?, 'PHYSICAL_FILE')",
+                (row_id, f"/corpus/doc{row_id}.txt", f"doc{row_id}.txt", state),
             )
         conn.commit()
+    for row_id, _state, text in rows:
+        db.update_content(row_id, text)
 
 
 def _engine(tmp_path, monkeypatch, name):
@@ -71,13 +72,9 @@ def test_changed_content_is_reembedded(tmp_path, monkeypatch) -> None:
     first = engine.semantic_search("alpha", limit=2, similarity_threshold=0.5)
     assert not first
 
-    # Content changes -> the stored vector must be refreshed, not reused.
-    with db.get_connection() as conn:
-        conn.execute("UPDATE files SET content_text=? WHERE id=1",
-                     ("alpha alpha alpha " + "filler " * 10,))
-        conn.commit()
-    fresh = ss.SemanticSearchEngine(db)  # new process/session, same store dir
-    results = fresh.semantic_search("alpha", limit=2, similarity_threshold=0.5)
+    # Content changes through the canonical writer -> must refresh, not reuse.
+    db.update_content(1, "alpha alpha alpha " + "filler " * 10)
+    results = engine.semantic_search("alpha", limit=2, similarity_threshold=0.5)
     assert results and results[0]["id"] == 1
 
 
@@ -93,10 +90,10 @@ def test_missing_doc_is_pruned_and_not_returned(tmp_path, monkeypatch) -> None:
     with db.get_connection() as conn:
         conn.execute("UPDATE files SET state='MISSING' WHERE id=1")
         conn.commit()
-    fresh = ss.SemanticSearchEngine(db)
-    after = fresh.semantic_search("alpha", limit=5, similarity_threshold=0.5)
+    db.mark_semantic_sweep_due()  # as a completed scan would
+    after = engine.semantic_search("alpha", limit=5, similarity_threshold=0.5)
     assert all(d["id"] != 1 for d in after), "MISSING document must never be returned"
 
-    store = fresh._get_store()
+    store = engine._get_store()
     assert store.load()
     assert 1 not in set(store.meta.ids), "MISSING id must be pruned from the store"
