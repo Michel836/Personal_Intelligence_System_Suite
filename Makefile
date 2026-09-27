@@ -1,6 +1,6 @@
 # Makefile for 36TB Intelligence
 
-.PHONY: help install install-dev setup test lint format clean run scan ui
+.PHONY: help install install-dev setup test lint format clean run scan ui lite smart full
 
 # Default target
 help:
@@ -80,7 +80,17 @@ else
 endif
 
 ui:
-	streamlit run src/ui/app.py
+	python -m src.launcher --profile full
+
+# Modern launch profiles (M012-B2): one canonical app, three profiles.
+lite:
+	python -m src.launcher --profile lite
+
+smart:
+	python -m src.launcher --profile smart
+
+full:
+	python -m src.launcher --profile full
 
 # Development utilities
 check-install:
