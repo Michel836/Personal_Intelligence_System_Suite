@@ -271,6 +271,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="override the app path (advanced; defaults to the canonical app)",
     )
+    parser.add_argument(
+        "--single-instance",
+        action="store_true",
+        help="refuse to start when another guarded instance is already running",
+    )
     return parser
 
 
@@ -318,6 +323,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         sys.stdout.write(" ".join(plan.command) + "\n")
         return 0
+
+    single = args.single_instance or os.environ.get("PIS_SINGLE_INSTANCE") == "1"
+    if single:
+        # PID lock with stale-lock recovery: a crashed owner never blocks forever.
+        from src.ops.instance import InstanceError, InstanceLock, detect_instances
+        duplicates = detect_instances()
+        if len(duplicates) > 1:
+            sys.stderr.write(
+                f"warning: {len(duplicates)} Streamlit app instances already detected\n")
+        lock = InstanceLock("ui", port=plan.port)
+        try:
+            lock.acquire()
+        except InstanceError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 3
+        try:
+            return launch(plan)
+        finally:
+            lock.release()
     return launch(plan)
 
 

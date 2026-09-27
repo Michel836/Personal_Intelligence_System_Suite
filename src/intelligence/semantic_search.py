@@ -59,7 +59,7 @@ class SemanticSearchEngine:
             logger.debug(f"AI service unavailable, using local embeddings: {exc}")
         return EmbeddingGenerator()
 
-    def _get_store(self):
+    def _get_store(self) -> Any:
         """Return the persistent matrix store for the active embedding model."""
         from .embedding_store import EmbeddingMatrixStore
 
@@ -205,6 +205,21 @@ class SemanticSearchEngine:
     def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Alias for semantic_search for compatibility."""
         return self.semantic_search(query, limit)
+
+    def refresh(self, *, batch_size: int = 256) -> dict[str, Any]:
+        """Bring the persistent store up to date with dirty documents.
+
+        Bounded and idempotent; safe to call repeatedly. Returns an aggregate
+        summary (no content). Used by the canonical CLI/API maintenance paths.
+        """
+        store = self._get_store()
+        if not self.is_available():
+            return {"available": False, "embedded": 0, "pruned": 0, "store_count": 0}
+        embedded, pruned = self._refresh_semantic(
+            store, model_key=store.model_key, dim=store.dim, batch_size=int(batch_size))
+        store.load()
+        return {"available": True, "embedded": int(embedded), "pruned": int(pruned),
+                "store_count": int(store.meta.count) if store.meta else 0}
     
     def semantic_search(
         self,
