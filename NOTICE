@@ -1,11 +1,11 @@
 Personal Intelligence System Suite
-Copyright (c) 2026 repository copyright holder(s).
+Copyright (C) 2026 Michel LULEV.
 
-This repository is intended to be dual-licensed:
+Licensing model:
 
-1. GNU Affero General Public License v3.0 only (AGPL-3.0-only), for users who comply with that licence; or
-2. a separate commercial licence, available by written agreement from the applicable copyright holder(s).
+1. GNU Affero General Public License v3.0 only (AGPL-3.0-only), for users who comply with that license; or
+2. a separate commercial license, available only by written agreement from the applicable copyright holder.
 
-The commercial option does not relicense third-party components. Third-party software and other materials remain subject to their own licence terms.
+The commercial option does not relicense third-party components. Third-party software, models, tools, data and other materials remain subject to their own license and contractual terms.
 
-See COMMERCIAL_LICENSE.md and THIRD_PARTY_NOTICES.md for additional information.
+See LICENSE, LICENSING.md, COMMERCIAL_LICENSE.md, COPYRIGHT, THIRD_PARTY_NOTICES.md and docs/DEPENDENCY_LICENSE_AUDIT.md.
