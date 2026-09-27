@@ -9,8 +9,6 @@ pytest.importorskip("streamlit")
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-from src.ui.app import _navigation_pages  # noqa: E402
-
 APP = str(Path(__file__).resolve().parents[2] / "src" / "ui" / "app.py")
 
 
@@ -54,12 +52,3 @@ def test_profile_gating_for_galaxy_page(monkeypatch) -> None:
     lite = _app()
     assert "🌌 Galaxy & Topics" not in _nav_options(lite)
     assert "🔍 Search" in _nav_options(lite)
-
-
-def test_navigation_pages_matches_profile_contract(monkeypatch) -> None:
-    monkeypatch.setenv("PIS_LAUNCH_PROFILE", "lite")
-    lite_pages = _navigation_pages()
-    assert "🔍 Search" in lite_pages
-    assert "🌌 Galaxy & Topics" not in lite_pages
-    monkeypatch.setenv("PIS_LAUNCH_PROFILE", "full")
-    assert "🌌 Galaxy & Topics" in _navigation_pages()
