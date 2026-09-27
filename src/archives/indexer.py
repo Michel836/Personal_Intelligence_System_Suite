@@ -51,6 +51,24 @@ def _format_from_name(name: str) -> Optional[ArchiveFormat]:
     return None
 
 
+# Outcomes that cannot change until the container bytes (fingerprint), the
+# processing version, the policy or the limits change. TIMEOUT and
+# BACKEND_UNAVAILABLE are transient and are never cached.
+_DETERMINISTIC_STATUSES = frozenset({
+    ArchiveStatus.OK.value,
+    ArchiveStatus.CORRUPT_ARCHIVE.value,
+    ArchiveStatus.UNSUPPORTED_FORMAT.value,
+    ArchiveStatus.PASSWORD_REQUIRED.value,
+    ArchiveStatus.LIMIT_DEPTH.value,
+    ArchiveStatus.LIMIT_MEMBER_COUNT.value,
+    ArchiveStatus.LIMIT_MEMBER_SIZE.value,
+    ArchiveStatus.LIMIT_TOTAL_SIZE.value,
+    ArchiveStatus.LIMIT_COMPRESSION_RATIO.value,
+    ArchiveStatus.EXTENSION_MISMATCH.value,
+    ArchiveStatus.NOT_ARCHIVE_FORMAT.value,
+})
+
+
 @dataclass
 class ArchiveIndexResult:
     parent_id: int
@@ -123,20 +141,27 @@ class ArchiveIndexer:
         fingerprint = inspector.fingerprint()
 
         state = self.db.get_archive_index_state(parent_id) or {}
+        cache_token = (
+            f"{ARCHIVE_PROCESSING_VERSION}:{self.limits.cache_signature()}:{self.policy.policy}"
+        )
+        cached_status = state.get("archive_status")
         # Only trust the fast path when member virtual paths still follow the
-        # current parent path (a renamed container must re-index).
+        # current parent path (a renamed container must re-index). Deterministic
+        # failures (corrupt / not-an-archive / limit hits) are cached too, so
+        # they are not re-attempted on every unchanged scan.
         if (
             not force
             and state.get("archive_fingerprint") == fingerprint
-            and state.get("archive_processing_version") == ARCHIVE_PROCESSING_VERSION
-            and state.get("archive_status") in {ArchiveStatus.OK.value, ArchiveStatus.LIMIT_MEMBER_COUNT.value}
+            and state.get("archive_processing_version") == cache_token
+            and cached_status in _DETERMINISTIC_STATUSES
             and self._members_match_parent(parent_id, parent_path)
         ):
-            # Revive members that were cascaded MISSING while the container was
-            # absent (the fingerprint proves the member set is unchanged).
-            self.db.reactivate_archive_members(parent_id)
+            if cached_status == ArchiveStatus.OK.value:
+                # Revive members cascaded MISSING while the container was absent
+                # (the fingerprint proves the member set is unchanged).
+                self.db.reactivate_archive_members(parent_id)
             result.unchanged = True
-            result.status = state.get("archive_status") or ArchiveStatus.OK.value
+            result.status = cached_status or ArchiveStatus.OK.value
             result.member_count = state.get("archive_member_count") or 0
             result.encrypted_count = state.get("archive_encrypted_count") or 0
             return result
@@ -163,7 +188,7 @@ class ArchiveIndexer:
             parent_id, fingerprint=fingerprint, status=status.value,
             member_count=result.member_count, encrypted_count=result.encrypted_count,
             compressed_size=result.compressed_size, expanded_size=result.expanded_size,
-            format_name=inspector.format.value, processing_version=ARCHIVE_PROCESSING_VERSION,
+            format_name=inspector.format.value, processing_version=cache_token,
         )
 
         if status not in {ArchiveStatus.OK, ArchiveStatus.LIMIT_MEMBER_COUNT,

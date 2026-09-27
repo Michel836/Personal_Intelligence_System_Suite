@@ -143,7 +143,11 @@ def test_failure_matrix_does_not_abort_batch(db, file_info_factory, tmp_path: Pa
     assert statuses["good.zip"] == ArchiveStatus.OK.value
     assert statuses["corrupt.zip"] == ArchiveStatus.CORRUPT_ARCHIVE.value
     assert statuses["trunc.tar"] in {ArchiveStatus.CORRUPT_ARCHIVE.value, ArchiveStatus.OK.value}
-    assert statuses["fake.rar"] in {ArchiveStatus.BACKEND_UNAVAILABLE.value, ArchiveStatus.CORRUPT_ARCHIVE.value}
+    assert statuses["fake.rar"] in {
+        ArchiveStatus.BACKEND_UNAVAILABLE.value,
+        ArchiveStatus.CORRUPT_ARCHIVE.value,
+        ArchiveStatus.NOT_ARCHIVE_FORMAT.value,
+    }
     # the good archive still produced searchable members
     assert any(r["filename"] == "ok.txt" for r in db.search_files(None))
 

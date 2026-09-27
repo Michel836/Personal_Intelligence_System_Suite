@@ -58,6 +58,16 @@ class ArchiveLimits:
             timeout=float(_env_int("PIS_ARCHIVE_TIMEOUT", 30)),
         )
 
+    def cache_signature(self) -> str:
+        """Stable token for the limit set, so a limit change re-processes."""
+        import hashlib
+
+        raw = (
+            f"{self.max_depth}:{self.max_members}:{self.max_member_bytes}:"
+            f"{self.max_total_uncompressed}:{self.max_ratio}:{int(self.timeout)}"
+        )
+        return hashlib.blake2b(raw.encode(), digest_size=6).hexdigest()
+
 
 @dataclass(frozen=True)
 class ArchivePolicy:

@@ -235,11 +235,12 @@ def test_rar_backend_unavailable_is_explicit(tmp_path: Path, monkeypatch) -> Non
     assert status in {ArchiveStatus.BACKEND_UNAVAILABLE, ArchiveStatus.PASSWORD_REQUIRED}
 
 
-def test_rar_corrupt_is_detected(tmp_path: Path, monkeypatch) -> None:
+def test_rar_without_signature_is_classified(tmp_path: Path, monkeypatch) -> None:
     import src.archives.inspector as insp
 
     monkeypatch.setattr(insp, "_rar_backend_available", lambda: True)
-    p = tmp_path / "bad.rar"
+    # No archive signature at all -> NOT_ARCHIVE_FORMAT, not "corrupt".
+    p = tmp_path / "not.rar"
     p.write_bytes(b"not a rar archive at all" * 8)
     _, status = ArchiveInspector(p, limits=SMALL).list_members()
-    assert status in {ArchiveStatus.CORRUPT_ARCHIVE, ArchiveStatus.PASSWORD_REQUIRED}
+    assert status is ArchiveStatus.NOT_ARCHIVE_FORMAT

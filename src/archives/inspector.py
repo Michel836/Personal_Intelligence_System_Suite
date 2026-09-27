@@ -47,6 +47,8 @@ _EXT_FORMATS: Dict[str, str] = {
 }
 
 _MAGIC_ZIP = b"PK\x03\x04"
+_MAGIC_ZIP_EMPTY = b"PK\x05\x06"
+_MAGIC_ZIP_SPANNED = b"PK\x07\x08"
 _MAGIC_7Z = b"7z\xbc\xaf\x27\x1c"
 _MAGIC_RAR = (b"Rar!\x1a\x07\x00", b"Rar!\x1a\x07\x01\x00")
 
@@ -107,6 +109,10 @@ class ArchiveStatus(str, Enum):
     LIMIT_MEMBER_SIZE = "LIMIT_MEMBER_SIZE"
     LIMIT_TOTAL_SIZE = "LIMIT_TOTAL_SIZE"
     LIMIT_COMPRESSION_RATIO = "LIMIT_COMPRESSION_RATIO"
+    # Signature says the file is a different archive format than its extension.
+    EXTENSION_MISMATCH = "EXTENSION_MISMATCH"
+    # No known archive signature at all (e.g. a proprietary file named *.zip).
+    NOT_ARCHIVE_FORMAT = "NOT_ARCHIVE_FORMAT"
     DISABLED = "DISABLED"
 
 
@@ -163,27 +169,71 @@ def _suffix_format(name: str) -> Optional[ArchiveFormat]:
 
 def detect_format(path: Path | str, *, magic: bool = True) -> ArchiveFormat:
     """Detect archive format by extension, corroborated by magic bytes."""
-    by_ext = _suffix_format(str(path))
-    if not magic:
-        return by_ext or ArchiveFormat.UNKNOWN
-    try:
-        with open(str(path), "rb") as fh:
-            head = fh.read(8)
-    except OSError:
-        return by_ext or ArchiveFormat.UNKNOWN
-    if head.startswith(_MAGIC_ZIP):
+    if magic:
+        fmt, _status = detect_archive_signature(path)
+        return fmt
+    return _suffix_format(str(path)) or ArchiveFormat.UNKNOWN
+
+
+def _magic_format(head: bytes, by_ext: Optional[ArchiveFormat]) -> Optional[ArchiveFormat]:
+    """Return the archive format implied by the leading magic bytes, if any."""
+    if head.startswith(_MAGIC_ZIP) or head.startswith(_MAGIC_ZIP_EMPTY) or head.startswith(_MAGIC_ZIP_SPANNED):
         return ArchiveFormat.ZIP
     if head.startswith(_MAGIC_7Z):
         return ArchiveFormat.SEVENZIP
     if head.startswith(_MAGIC_RAR):
         return ArchiveFormat.RAR
     if head.startswith(b"\x1f\x8b"):
-        return by_ext if by_ext and by_ext.is_tar else ArchiveFormat.GZ
+        return ArchiveFormat.TAR_GZ if by_ext is ArchiveFormat.TAR_GZ else ArchiveFormat.GZ
     if head.startswith(b"BZh"):
-        return by_ext if by_ext and by_ext.is_tar else ArchiveFormat.BZ2
+        return ArchiveFormat.TAR_BZ2 if by_ext is ArchiveFormat.TAR_BZ2 else ArchiveFormat.BZ2
     if head.startswith(b"\xfd7zXZ\x00"):
-        return by_ext if by_ext and by_ext.is_tar else ArchiveFormat.XZ
-    return by_ext or ArchiveFormat.UNKNOWN
+        return ArchiveFormat.TAR_XZ if by_ext is ArchiveFormat.TAR_XZ else ArchiveFormat.XZ
+    return None
+
+
+def _ext_compatible(by_ext: ArchiveFormat, magic: ArchiveFormat) -> bool:
+    if by_ext is magic:
+        return True
+    families = {
+        ArchiveFormat.GZ: {ArchiveFormat.GZ, ArchiveFormat.TAR_GZ},
+        ArchiveFormat.TAR_GZ: {ArchiveFormat.GZ, ArchiveFormat.TAR_GZ},
+        ArchiveFormat.BZ2: {ArchiveFormat.BZ2, ArchiveFormat.TAR_BZ2},
+        ArchiveFormat.TAR_BZ2: {ArchiveFormat.BZ2, ArchiveFormat.TAR_BZ2},
+        ArchiveFormat.XZ: {ArchiveFormat.XZ, ArchiveFormat.TAR_XZ},
+        ArchiveFormat.TAR_XZ: {ArchiveFormat.XZ, ArchiveFormat.TAR_XZ},
+    }
+    return magic in families.get(by_ext, {by_ext})
+
+
+def detect_archive_signature(
+    path: Path | str,
+) -> Tuple[ArchiveFormat, Optional[ArchiveStatus]]:
+    """Detect format and classify extension/signature disagreement.
+
+    Uses a bounded header read only. ``TAR`` has no magic at offset 0, so it is
+    never flagged as a mismatch (listing decides). Container/stream formats
+    (ZIP/7z/RAR/GZ/BZ2/XZ) require their magic; a ``*.zip`` that is actually a
+    proprietary file is ``NOT_ARCHIVE_FORMAT`` (deterministic), not corrupt.
+    """
+    by_ext = _suffix_format(str(path))
+    try:
+        with open(str(path), "rb") as fh:
+            head = fh.read(8)
+    except OSError:
+        return (by_ext or ArchiveFormat.UNKNOWN, None)
+    magic = _magic_format(head, by_ext)
+    if magic is None:
+        if by_ext is None:
+            return (ArchiveFormat.UNKNOWN, None)
+        if by_ext is ArchiveFormat.TAR:
+            return (ArchiveFormat.TAR, None)
+        # These formats are defined by their magic; its absence means the file
+        # is not that archive format at all (deterministic, cacheable).
+        return (by_ext, ArchiveStatus.NOT_ARCHIVE_FORMAT)
+    if by_ext is not None and not _ext_compatible(by_ext, magic):
+        return (magic, ArchiveStatus.EXTENSION_MISMATCH)
+    return (by_ext or magic, None)
 
 
 _DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -289,7 +339,11 @@ class ArchiveInspector:
         self.limits = limits or ArchiveLimits.from_env()
         self.budget = budget if budget is not None else ArchiveBudget()
         self.depth = depth
-        self.format = format_hint or detect_format(self.path)
+        if format_hint is not None:
+            self.format = format_hint
+            self.signature_status: Optional[ArchiveStatus] = None
+        else:
+            self.format, self.signature_status = detect_archive_signature(self.path)
 
     # -- metadata ----------------------------------------------------------
     def fingerprint(self, *, full_hash_limit: int = 0) -> str:
@@ -322,6 +376,9 @@ class ArchiveInspector:
         """Return sanitized members plus a status; never raises."""
         if self.depth > self.limits.max_depth:
             return [], ArchiveStatus.LIMIT_DEPTH
+        if self.signature_status is not None:
+            # Extension/signature disagreement: deterministic, never parsed.
+            return [], self.signature_status
         if not self.format.is_container:
             return [], ArchiveStatus.UNSUPPORTED_FORMAT
         deadline = time.monotonic() + self.limits.timeout
