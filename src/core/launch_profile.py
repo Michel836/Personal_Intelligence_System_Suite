@@ -85,6 +85,7 @@ class Capability(str, Enum):
     GRAPH = "graph"
     INGESTION = "ingestion"
     REPORTS = "reports"
+    OPERATIONS = "operations"
 
     # Advanced capabilities: exposed by SMART/FULL, hidden by default in LITE.
     SEMANTIC_SEARCH = "semantic_search"
@@ -111,6 +112,7 @@ CORE_CAPABILITIES: frozenset[Capability] = frozenset(
         Capability.GRAPH,
         Capability.INGESTION,
         Capability.REPORTS,
+        Capability.OPERATIONS,
     }
 )
 

@@ -151,6 +151,7 @@ _NAVIGATION: list[tuple[str, Capability]] = [
     ("🧭 Timeline & Graph", Capability.GRAPH),
     ("🛠️ Ingestion & Coverage", Capability.INGESTION),
     ("📁 Dossiers & Reports", Capability.REPORTS),
+    ("🧰 Operations & System", Capability.OPERATIONS),
     ("🧠 AI Search", Capability.SEMANTIC_SEARCH),
     ("💬 AI Chat", Capability.AI_CHAT),
     ("🏷️ Tags & Favorites", Capability.TAGS),
@@ -278,6 +279,10 @@ def main():
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Dossiers & Reports page"):
             from src.ui.reports_page import render as render_reports_page
             render_reports_page()
+    elif page == "🧰 Operations & System":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Operations & System page"):
+            from src.ui.operations_page import render as render_operations_page
+            render_operations_page()
     elif page == "🏷️ Tags & Favorites":
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Tags & Favorites page"):
             tags_favorites_page()
