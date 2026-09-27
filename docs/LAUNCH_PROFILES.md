@@ -64,6 +64,15 @@ These are applied **only when the operator has not set the variable**:
 `PIS_REMOTE_CONTENT_POLICY=never` is a default in **every** profile: a profile can
 never widen the privacy policy on its own.
 
+## Platform support (Linux first)
+
+* Launch wrappers use `.venv/bin/python` on Linux/macOS (Windows uses
+  `.venv\Scripts\python.exe`); the launcher itself uses `sys.executable`.
+* File / folder opening is cross-platform via `src/utils/os_open.py`
+  (`xdg-open` on Linux, `open` on macOS, `explorer`/`startfile` on Windows).
+  No UI module hard-codes a Windows path or `explorer` command.
+* No `.bat`, PowerShell-only syntax or `C:\` paths are required to launch.
+
 ## Configuration precedence
 
 Highest priority wins:
@@ -224,4 +233,5 @@ The stale duplicate `src/ui/app_backup.py` was removed.
 | Occupied port | Preferred ports auto-move; explicit ports fail loudly. |
 | Missing optional dependency (e.g. OCR, archive backend, plotly) | Feature degrades with an in-UI message; core pages unaffected. |
 | HuggingFace offline | Semantic search degrades to lexical; no remote calls. |
+| Missing file opener (`xdg-open`) | Open/reveal buttons report failure; the app and viewer keep working. |
 | Read-only data dir | Core read/search still work; writes surface an error instead of crashing. |
