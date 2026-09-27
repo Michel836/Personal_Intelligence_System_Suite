@@ -34,6 +34,15 @@ def render_ai_status(service=None, *, expanded: bool = False) -> None:
         cols[1].metric("Remote policy", str(cfg.get("content_policy", "never")))
         cols[2].metric("Hardware tier", str(status.get("hardware_tier", "?")))
 
+        from ..core.launch_profile import current_profile
+
+        tier = str(status.get("hardware_tier", "lite"))
+        recommended = {"lite": "LITE", "balanced": "SMART", "performance": "FULL"}.get(tier, "SMART")
+        st.caption(
+            f"Active profile: {current_profile().value.upper()} · "
+            f"recommended for this hardware tier: {recommended}"
+        )
+
         def _describe(entry: dict) -> str:
             return (f"{entry.get('provider', '?')} · {entry.get('model') or '—'} · "
                     f"{'remote' if entry.get('remote') else 'local'} · "
