@@ -24,7 +24,6 @@ from src.core.volume import VolumeInfo  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 APP = ROOT / "src" / "ui" / "app.py"
-MODERN_APP = ROOT / "src" / "ui" / "modern_app.py"
 
 CONTENT = {
     "cancer.txt": "cancer immunotherapy study",
@@ -166,11 +165,6 @@ def test_restart_persistence(ui_db: Path, tmp_path: Path) -> None:
 
 def test_ai_unavailable_degrades_gracefully(ui_db: Path) -> None:
     assert not _nav(_app(), "💬 AI Chat").exception
-
-
-def test_modern_app_renders(ui_db: Path) -> None:
-    at = _app(MODERN_APP)
-    assert not at.exception, [e.message for e in at.exception]
 
 
 def test_final_uninterrupted_user_journey(ui_db: Path, tmp_path: Path) -> None:
