@@ -879,6 +879,7 @@ class DatabaseManager:
         """Record member extraction outcome (content is optional metadata)."""
         with self.get_connection() as conn:
             if content is not None:
+                content = self._safe_text(content)
                 conn.execute(
                     "UPDATE files SET content_text = ?, content_extracted = 1, extraction_state = ? WHERE id = ?",
                     (content, state, member_id),
@@ -1548,8 +1549,25 @@ class DatabaseManager:
                 'largest_files': []
             }
     
+    @staticmethod
+    def _safe_text(text: str) -> str:
+        """Return UTF-8-persistable text.
+
+        Some extractors (notably PyPDF2 on malformed PDFs) can emit lone
+        surrogate code points that SQLite's UTF-8 adapter cannot encode. Replace
+        them instead of failing the whole persistence write.
+        """
+        if not text:
+            return text
+        try:
+            text.encode("utf-8")
+            return text
+        except UnicodeEncodeError:
+            return text.encode("utf-8", "replace").decode("utf-8")
+
     def update_content(self, file_id: int, content: str) -> None:
         """Update extracted content for a file and flag it for re-embedding."""
+        content = self._safe_text(content)
         with self.get_connection() as conn:
             conn.execute("""
                 UPDATE files 
