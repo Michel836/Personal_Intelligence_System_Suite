@@ -6,7 +6,7 @@ reason category (semantic, exact duplicate, near duplicate, version, archive).
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -15,13 +15,13 @@ from .store import DedupStore
 
 
 class RelatedDocuments:
-    def __init__(self, db, *, dedup_store: Optional[DedupStore] = None,
-                 embed_store: Optional[EmbeddingMatrixStore] = None) -> None:
+    def __init__(self, db: Any, *, dedup_store: DedupStore | None = None,
+                 embed_store: EmbeddingMatrixStore | None = None) -> None:
         self.db = db
         self.store = dedup_store or DedupStore(db)
         self.embed_store = embed_store
 
-    def _load(self) -> Optional[EmbeddingMatrixStore]:
+    def _load(self) -> EmbeddingMatrixStore | None:
         if self.embed_store is None:
             return None
         if self.embed_store.matrix is None and not self.embed_store.load():
@@ -42,7 +42,7 @@ class RelatedDocuments:
         return markers
 
     def related(self, file_id: int, *, limit: int = 10, include_missing: bool = False,
-                exclude_ids: Optional[set] = None) -> list[dict[str, Any]]:
+                exclude_ids: set[int] | None = None) -> list[dict[str, Any]]:
         estore = self._load()
         if estore is None or estore.meta is None or estore.matrix is None:
             return []
@@ -56,7 +56,7 @@ class RelatedDocuments:
         order = np.argsort(-scores)
         exclude = set(exclude_ids or ())
         exclude.add(int(file_id))
-        picked: list[tuple] = []
+        picked: list[tuple[int, float]] = []
         for idx in order:
             if len(picked) >= limit * 3:
                 break

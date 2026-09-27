@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -27,7 +27,7 @@ class ContentHasher:
     requested, because that requires re-reading the parent container.
     """
 
-    def __init__(self, db, store: Optional[DedupStore] = None, *,
+    def __init__(self, db: Any, store: DedupStore | None = None, *,
                  max_bytes: int = 1024 * 1024 * 1024, chunk: int = _CHUNK) -> None:
         self.db = db
         self.store = store or DedupStore(db)
@@ -36,7 +36,7 @@ class ContentHasher:
 
     # -- single file -------------------------------------------------------
     @staticmethod
-    def hash_stream(fh) -> str:
+    def hash_stream(fh: Any) -> str:
         h = hashlib.sha256()
         while True:
             block = fh.read(_CHUNK)
@@ -45,7 +45,7 @@ class ContentHasher:
             h.update(block)
         return h.hexdigest()
 
-    def _hash_filesystem(self, path: str, size: int) -> tuple[Optional[str], str, Optional[str]]:
+    def _hash_filesystem(self, path: str, size: int) -> tuple[str | None, str, str | None]:
         if size > self.max_bytes:
             return None, HASH_TOO_LARGE, f"size {size} > max {self.max_bytes}"
         try:
@@ -54,7 +54,7 @@ class ContentHasher:
         except (OSError, PermissionError) as exc:
             return None, HASH_UNREADABLE, type(exc).__name__
 
-    def _archive_member_bytes(self, row: dict[str, Any]) -> tuple[Optional[str], str, Optional[str]]:
+    def _archive_member_bytes(self, row: dict[str, Any]) -> tuple[str | None, str, str | None]:
         from ..archives.inspector import (
             ArchiveInspector,
             ArchiveLimitError,
@@ -92,7 +92,7 @@ class ContentHasher:
         except Exception as exc:  # noqa: BLE001 - one bad member must not stop the pass
             return None, HASH_UNREADABLE, type(exc).__name__
 
-    def hash_one(self, row: dict[str, Any], *, include_members: bool) -> tuple[Optional[str], str, Optional[str]]:
+    def hash_one(self, row: dict[str, Any], *, include_members: bool) -> tuple[str | None, str, str | None]:
         if row.get("document_kind") == "ARCHIVE_MEMBER":
             if not include_members:
                 return None, HASH_SKIPPED, "members disabled"
@@ -100,10 +100,10 @@ class ContentHasher:
         return self._hash_filesystem(row["path"], int(row.get("size_bytes") or 0))
 
     # -- bounded backfill --------------------------------------------------
-    def backfill(self, *, min_size: int = 1, max_size: Optional[int] = None,
-                 scope_prefix: Optional[str] = None, include_members: bool = False,
-                 limit: Optional[int] = None,
-                 progress: Optional[Callable[[int, int], None]] = None) -> dict[str, Any]:
+    def backfill(self, *, min_size: int = 1, max_size: int | None = None,
+                 scope_prefix: str | None = None, include_members: bool = False,
+                 limit: int | None = None,
+                 progress: Callable[[int, int], None] | None = None) -> dict[str, Any]:
         targets = self.store.stale_hash_targets(
             min_size=min_size, max_size=max_size, scope_prefix=scope_prefix,
             include_members=include_members, limit=limit,
@@ -114,7 +114,7 @@ class ContentHasher:
             "errors": [],
         }
         t0 = time.perf_counter()
-        pending: list[tuple] = []
+        pending: list[tuple[Any, ...]] = []
         for i, row in enumerate(targets):
             digest, state, error = self.hash_one(row, include_members=include_members)
             pending.append((int(row["id"]), "sha256", digest, int(row.get("size_bytes") or 0),

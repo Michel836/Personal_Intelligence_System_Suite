@@ -13,7 +13,7 @@ pair carries its semantic and lexical score with a reason category.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 from loguru import logger
@@ -28,22 +28,22 @@ _BANDS = 8
 
 
 class NearDuplicateEngine:
-    def __init__(self, db, store: Optional[DedupStore] = None,
-                 embed_store: Optional[EmbeddingMatrixStore] = None) -> None:
+    def __init__(self, db: Any, store: DedupStore | None = None,
+                 embed_store: EmbeddingMatrixStore | None = None) -> None:
         self.db = db
         self.store = store or DedupStore(db)
         self.embed_store = embed_store
 
     # -- inputs ------------------------------------------------------------
-    def _load_embed_store(self) -> Optional[EmbeddingMatrixStore]:
+    def _load_embed_store(self) -> EmbeddingMatrixStore | None:
         if self.embed_store is None:
             return None
         if self.embed_store.matrix is None and not self.embed_store.load():
             return None
         return self.embed_store
 
-    def _active_ids(self, *, min_chars: int, scope_prefix: Optional[str],
-                    max_docs: Optional[int]) -> list[int]:
+    def _active_ids(self, *, min_chars: int, scope_prefix: str | None,
+                    max_docs: int | None) -> list[int]:
         sql = ("SELECT id FROM files WHERE content_extracted=1 AND content_text IS NOT NULL "
                "AND length(content_text) >= ? AND COALESCE(state,'ACTIVE')='ACTIVE'")
         params: list[Any] = [int(min_chars)]
@@ -60,6 +60,7 @@ class NearDuplicateEngine:
     # -- candidate generation ---------------------------------------------
     def _vector_pairs(self, estore: EmbeddingMatrixStore, ids: list[int], *,
                       bits: int, bands: int, max_pairs: int) -> tuple[list[tuple[int, int]], bool]:
+        assert estore.meta is not None
         id_to_row = {int(i): r for r, i in enumerate(estore.meta.ids)}
         sub_ids = [i for i in ids if i in id_to_row]
         if len(sub_ids) < 2:
@@ -131,7 +132,7 @@ class NearDuplicateEngine:
 
     # -- build -------------------------------------------------------------
     def build(self, *, threshold: float = 0.9, min_chars: int = 200,
-              scope_prefix: Optional[str] = None, max_docs: Optional[int] = None,
+              scope_prefix: str | None = None, max_docs: int | None = None,
               max_pairs: int = 2_000_000, bands: int = _BANDS, bits: int = _BITS,
               max_neighbors_per_doc: int = 20) -> dict[str, Any]:
         self.store.prune_missing_relations()
@@ -139,11 +140,15 @@ class NearDuplicateEngine:
         estore = self._load_embed_store()
         used_vector = estore is not None and estore.meta is not None and estore.matrix is not None
         if used_vector:
+            assert estore is not None and estore.meta is not None and estore.matrix is not None
             pairs, truncated = self._vector_pairs(estore, ids, bits=bits, bands=bands, max_pairs=max_pairs)
         else:
             pairs, truncated = self._lexical_pairs(ids, bands=bands, max_pairs=max_pairs)
 
-        hash_by_id = dict(estore.hash_map()) if used_vector else {}
+        hash_by_id: dict[int, Any] = {}
+        if used_vector:
+            assert estore is not None
+            hash_by_id = dict(estore.hash_map())
         # Fall back to the persisted exact-content hashes when the embedding store
         # was built without per-row hashes (legacy stores).
         with self.db.get_connection() as conn:
@@ -152,6 +157,7 @@ class NearDuplicateEngine:
                 hash_by_id.setdefault(int(fid), f"sha256:{digest}")
         row_by_id: dict[int, int] = {}
         if used_vector:
+            assert estore is not None and estore.meta is not None
             row_by_id = {int(i): r for r, i in enumerate(estore.meta.ids)}
 
         edges: list[dict[str, Any]] = []
@@ -160,7 +166,7 @@ class NearDuplicateEngine:
             if hash_by_id.get(a) and hash_by_id.get(a) == hash_by_id.get(b):
                 continue
             sem = None
-            if used_vector and a in row_by_id and b in row_by_id:
+            if used_vector and estore is not None and estore.matrix is not None and a in row_by_id and b in row_by_id:
                 sem = float(np.dot(estore.matrix[row_by_id[a]], estore.matrix[row_by_id[b]]))
             if sem is not None and sem < threshold:
                 continue
@@ -171,7 +177,7 @@ class NearDuplicateEngine:
         # Lexical score for explanation, computed only for surviving candidates.
         if edges:
             involved = sorted({e["src_id"] for e in edges} | {e["dst_id"] for e in edges})
-            tokens: dict[int, set] = {}
+            tokens: dict[int, set[str]] = {}
             with self.db.get_connection() as conn:
                 for start in range(0, len(involved), 500):
                     chunk = involved[start:start + 500]

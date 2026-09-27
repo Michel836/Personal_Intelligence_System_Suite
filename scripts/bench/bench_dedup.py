@@ -137,8 +137,9 @@ def main(argv=None) -> int:
     report["rerank"] = {"queries": len(queries), "p50_ms": round(statistics.median(lat), 2),
                         "max_ms": round(max(lat), 2)} if lat else {}
 
-    json.dump(report, open(args.out, "w"), indent=2)
-    print(json.dumps(report, indent=2))
+    with open(args.out, "w") as fh:
+        json.dump(report, fh, indent=2)
+    print(json.dumps(report, indent=2))  # noqa: T201
     return 0
 
 

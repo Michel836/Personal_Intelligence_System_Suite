@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 from .hashing import HASH_OK, ContentHasher
 from .store import DedupStore, _like_prefix
@@ -15,15 +15,15 @@ class ExactDuplicateEngine:
     candidate are hashed, so unique-size files are never read.
     """
 
-    def __init__(self, db, store: Optional[DedupStore] = None,
-                 hasher: Optional[ContentHasher] = None) -> None:
+    def __init__(self, db: Any, store: DedupStore | None = None,
+                 hasher: ContentHasher | None = None) -> None:
         self.db = db
         self.store = store or DedupStore(db)
         self.hasher = hasher or ContentHasher(db, self.store)
 
     # -- size candidate groups --------------------------------------------
-    def size_candidate_sizes(self, *, min_size: int = 1, max_size: Optional[int] = None,
-                             scope_prefix: Optional[str] = None,
+    def size_candidate_sizes(self, *, min_size: int = 1, max_size: int | None = None,
+                             scope_prefix: str | None = None,
                              include_members: bool = True, max_sizes: int = 20000) -> list[int]:
         kinds = ["PHYSICAL_FILE", "ARCHIVE_MEMBER"] if include_members else ["PHYSICAL_FILE"]
         ph = ",".join("?" * len(kinds))
@@ -41,10 +41,10 @@ class ExactDuplicateEngine:
         with self.db.get_connection() as conn:
             return [int(r[0]) for r in conn.execute(sql, params).fetchall()]
 
-    def hash_duplicate_candidates(self, *, min_size: int = 1, max_size: Optional[int] = None,
-                                  scope_prefix: Optional[str] = None,
+    def hash_duplicate_candidates(self, *, min_size: int = 1, max_size: int | None = None,
+                                  scope_prefix: str | None = None,
                                   include_members: bool = True, max_sizes: int = 20000,
-                                  progress: Optional[Callable[[int, int], None]] = None) -> dict[str, Any]:
+                                  progress: Callable[[int, int], None] | None = None) -> dict[str, Any]:
         """Hash only files that share a size with at least one other candidate."""
         sizes = self.size_candidate_sizes(min_size=min_size, max_size=max_size,
                                           scope_prefix=scope_prefix,
@@ -71,7 +71,7 @@ class ExactDuplicateEngine:
                 params.append(_like_prefix(scope_prefix))
             with self.db.get_connection() as conn:
                 rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
-            pending: list[tuple] = []
+            pending: list[tuple[Any, ...]] = []
             for row in rows:
                 digest, state, error = self.hasher.hash_one(row, include_members=include_members)
                 pending.append((int(row["id"]), "sha256", digest, int(row["size_bytes"] or 0),
@@ -95,10 +95,10 @@ class ExactDuplicateEngine:
         return stats
 
     # -- groups ------------------------------------------------------------
-    def groups(self, **kwargs) -> list[dict[str, Any]]:
+    def groups(self, **kwargs: Any) -> list[dict[str, Any]]:
         return self.store.exact_duplicate_groups(**kwargs)
 
-    def summary(self, *, min_size: int = 1, scope_prefix: Optional[str] = None,
+    def summary(self, *, min_size: int = 1, scope_prefix: str | None = None,
                 include_members: bool = True, include_missing: bool = False) -> dict[str, Any]:
         totals = self.store.duplicate_totals(min_size=min_size, scope_prefix=scope_prefix,
                                              include_members=include_members,

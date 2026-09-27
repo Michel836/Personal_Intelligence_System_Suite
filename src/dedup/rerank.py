@@ -29,7 +29,7 @@ def _exact_hit(result: dict[str, Any], query_tokens: list[str]) -> bool:
 def fuse_results(lexical: Iterable[dict[str, Any]], semantic: Iterable[dict[str, Any]], *,
                  limit: int = 20, k: int = 60, w_lex: float = 1.0, w_sem: float = 1.0,
                  query: str = "", collapse_duplicates: bool = True,
-                 version_diversity: bool = False, dedup_store=None,
+                 version_diversity: bool = False, dedup_store: Any = None,
                  show_all_copies: bool = False,
                  show_all_versions: bool = False) -> list[dict[str, Any]]:
     """Fuse lexical + semantic rankings into one transparent, deduplicated list."""
@@ -104,11 +104,11 @@ def fuse_results(lexical: Iterable[dict[str, Any]], semantic: Iterable[dict[str,
     return out
 
 
-def rerank_search(db, semantic_engine, query: str, *, limit: int = 20,
-                  candidate_multiplier: int = 3, dedup_store=None,
+def rerank_search(db: Any, semantic_engine: Any, query: str, *, limit: int = 20,
+                  candidate_multiplier: int = 3, dedup_store: Any = None,
                   collapse_duplicates: bool = True, version_diversity: bool = False,
                   semantic_weight: float = 1.0, lexical_weight: float = 1.0,
-                  **filters) -> list[dict[str, Any]]:
+                  **filters: Any) -> list[dict[str, Any]]:
     """Retrieve lexical + semantic candidates and fuse them."""
     n = max(limit * candidate_multiplier, limit + 10)
     lexical = db.search_files(query=query, limit=n, **filters)

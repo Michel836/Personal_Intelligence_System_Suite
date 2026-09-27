@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -56,7 +56,7 @@ def normalize_stem(name: str) -> str:
     return " ".join(tokens).strip()
 
 
-def version_marker(name: str) -> Optional[dict[str, Any]]:
+def version_marker(name: str) -> dict[str, Any] | None:
     """Extract an explicit version marker (date or number), or None."""
     for idx, pat in enumerate(_DATE_PATTERNS):
         m = pat.search(name)
@@ -78,11 +78,11 @@ def version_marker(name: str) -> Optional[dict[str, Any]]:
 
 
 class VersionTracker:
-    def __init__(self, db, store: Optional[DedupStore] = None) -> None:
+    def __init__(self, db: Any, store: DedupStore | None = None) -> None:
         self.db = db
         self.store = store or DedupStore(db)
 
-    def _files(self, *, scope_prefix: Optional[str], include_members: bool) -> list[dict[str, Any]]:
+    def _files(self, *, scope_prefix: str | None, include_members: bool) -> list[dict[str, Any]]:
         kinds = ["PHYSICAL_FILE", "ARCHIVE_MEMBER"] if include_members else ["PHYSICAL_FILE"]
         ph = ",".join("?" * len(kinds))
         sql = (f"SELECT id, path, filename, extension, parent_dir, size_bytes, modified_at, "
@@ -95,11 +95,11 @@ class VersionTracker:
         with self.db.get_connection() as conn:
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
-    def build(self, *, scope_prefix: Optional[str] = None, include_members: bool = False,
+    def build(self, *, scope_prefix: str | None = None, include_members: bool = False,
               use_near_duplicates: bool = True, max_families: int = 5000) -> dict[str, Any]:
         self.store.prune_missing_relations()
         files = self._files(scope_prefix=scope_prefix, include_members=include_members)
-        grouped: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
         for f in files:
             stem = normalize_stem(f["filename"] or "")
             if not stem:
@@ -107,7 +107,7 @@ class VersionTracker:
             grouped[(f.get("parent_dir") or "", stem)].append(f)
 
         # Optional semantic support from near-duplicate edges (evidence only).
-        near_pairs: set[tuple] = set()
+        near_pairs: set[tuple[int, int]] = set()
         if use_near_duplicates:
             with self.db.get_connection() as conn:
                 near_pairs = {(int(a), int(b)) for a, b in conn.execute(
@@ -132,7 +132,7 @@ class VersionTracker:
             else:
                 confidence = "UNORDERED"
             # Chronology: explicit markers win; otherwise mtime labelled probable.
-            def _order_key(m, _markers=markers):
+            def _order_key(m: dict[str, Any], _markers: dict[int, Any] = markers) -> tuple[Any, ...]:
                 mk = _markers.get(int(m["id"]))
                 if mk:
                     return (0, mk["sort"], str(m.get("modified_at") or ""))
@@ -171,7 +171,7 @@ class VersionTracker:
         logger.info(f"version families: {result}")
         return result
 
-    def family_for_file(self, file_id: int) -> Optional[dict[str, Any]]:
+    def family_for_file(self, file_id: int) -> dict[str, Any] | None:
         return self.store.get_version_family_for_file(file_id)
 
     def families(self, *, limit: int = 500) -> list[dict[str, Any]]:

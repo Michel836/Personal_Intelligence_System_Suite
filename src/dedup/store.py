@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from typing import Any, Optional
+from typing import Any
 
 
 class DedupStore:
     """Schema + CRUD for content hashes, version families and near-dup edges."""
 
-    def __init__(self, db) -> None:  # db: DatabaseManager
+    def __init__(self, db: Any) -> None:
         self.db = db
         self._ensure()
 
@@ -85,12 +85,12 @@ class DedupStore:
             conn.commit()
 
     # -- content hashes ----------------------------------------------------
-    def set_hash(self, file_id: int, *, digest: Optional[str], size_bytes: int,
-                 modified_at: Optional[str], state: str = "OK",
-                 error: Optional[str] = None, algorithm: str = "sha256") -> None:
+    def set_hash(self, file_id: int, *, digest: str | None, size_bytes: int,
+                 modified_at: str | None, state: str = "OK",
+                 error: str | None = None, algorithm: str = "sha256") -> None:
         self.set_hashes([(int(file_id), algorithm, digest, int(size_bytes), modified_at, state, error)])
 
-    def set_hashes(self, rows: Iterable[tuple]) -> None:
+    def set_hashes(self, rows: Iterable[tuple[Any, ...]]) -> None:
         """Batch-upsert ``(file_id, algorithm, digest, size, modified_at, state, error)``."""
         rows = list(rows)
         if not rows:
@@ -109,7 +109,7 @@ class DedupStore:
             )
             conn.commit()
 
-    def get_hash(self, file_id: int) -> Optional[dict[str, Any]]:
+    def get_hash(self, file_id: int) -> dict[str, Any] | None:
         with self.db.get_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM content_hashes WHERE file_id=?", (int(file_id),)
@@ -129,9 +129,9 @@ class DedupStore:
                 "by_state": by_state, "distinct_digests": int(distinct),
                 "coverage": round(hashed / total, 4) if total else 0.0}
 
-    def stale_hash_targets(self, *, min_size: int = 1, max_size: Optional[int] = None,
-                           scope_prefix: Optional[str] = None, include_members: bool = False,
-                           limit: Optional[int] = None) -> list[dict[str, Any]]:
+    def stale_hash_targets(self, *, min_size: int = 1, max_size: int | None = None,
+                           scope_prefix: str | None = None, include_members: bool = False,
+                           limit: int | None = None) -> list[dict[str, Any]]:
         """Files whose stored hash is missing or invalidated by size/mtime change."""
         kinds = ["PHYSICAL_FILE", "ARCHIVE_MEMBER"] if include_members else ["PHYSICAL_FILE"]
         placeholders = ",".join("?" * len(kinds))
@@ -162,7 +162,7 @@ class DedupStore:
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
     # -- exact duplicate groups -------------------------------------------
-    def exact_duplicate_groups(self, *, min_size: int = 1, scope_prefix: Optional[str] = None,
+    def exact_duplicate_groups(self, *, min_size: int = 1, scope_prefix: str | None = None,
                                include_members: bool = True, include_missing: bool = False,
                                max_groups: int = 500,
                                max_members_per_group: int = 100) -> list[dict[str, Any]]:
@@ -218,7 +218,7 @@ class DedupStore:
                 g["member_count_archive"] = sum(1 for m in g["members"] if m["document_kind"] == "ARCHIVE_MEMBER")
         return groups
 
-    def duplicate_totals(self, *, min_size: int = 1, scope_prefix: Optional[str] = None,
+    def duplicate_totals(self, *, min_size: int = 1, scope_prefix: str | None = None,
                          include_members: bool = True, include_missing: bool = False) -> dict[str, Any]:
         """True aggregate over *all* duplicate groups (groups list may be capped)."""
         kinds = ["PHYSICAL_FILE", "ARCHIVE_MEMBER"] if include_members else ["PHYSICAL_FILE"]
@@ -313,7 +313,7 @@ class DedupStore:
             conn.commit()
         return len(families)
 
-    def get_version_family_for_file(self, file_id: int) -> Optional[dict[str, Any]]:
+    def get_version_family_for_file(self, file_id: int) -> dict[str, Any] | None:
         with self.db.get_connection() as conn:
             row = conn.execute(
                 "SELECT family_id FROM version_members WHERE file_id=?", (int(file_id),)
