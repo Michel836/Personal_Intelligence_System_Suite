@@ -8,6 +8,19 @@
 [![SQLite](https://img.shields.io/badge/Database-SQLite-blue.svg)](https://www.sqlite.org)
 [![Status](https://img.shields.io/badge/Status-v1.0%20Active-brightgreen.svg)]()
 
+## 🚦 Release Candidate (v1.0.0-rc1)
+
+M013–M020 are consolidated and validated as a release candidate. Start here:
+
+* **[Release Candidate guide](docs/RELEASE_CANDIDATE.md)** — install, operate,
+  privacy model, backup/restore, limits and canonical vs legacy surfaces.
+* **[Release notes](docs/RELEASE_NOTES.md)** — capabilities and known limitations.
+* **Release acceptance:** `tests/release/` (end-to-end, profiles, backup round-trip,
+  privacy, CLI/API, UI smoke) plus `.validation/<UTC>/validation.json`.
+
+One canonical app, three profiles; SQLite canonical; local-only privacy default;
+source files are never modified.
+
 ## 🎯 Quick Start (Linux / Kubuntu first)
 
 **One canonical application, three launch profiles (M012-B2).** Every profile
