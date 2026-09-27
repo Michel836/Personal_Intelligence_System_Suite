@@ -52,6 +52,33 @@ def sensitivity_of(db: Any, file_id: int) -> str | None:
         return None
 
 
+_PATH_KEYS = {"path", "parent_dir", "archive_path"}
+_TEXT_KEYS = {"filename", "preview", "label", "display", "name", "note", "query"}
+
+
+def sanitize(obj: Any, *, mask_pii: bool = True, redact_paths: bool = True) -> Any:
+    """Recursively mask PII-bearing text and redact private paths in a payload.
+
+    Used by the read-only API so no galaxy/cluster/context response can leak a
+    raw private path or a raw identifier regardless of nesting depth.
+    """
+    if isinstance(obj, dict):
+        out: dict[str, Any] = {}
+        for key, value in obj.items():
+            if isinstance(value, str) and value:
+                if key in _PATH_KEYS:
+                    out[key] = safe_path(value, redact_paths=redact_paths, mask_pii=mask_pii)
+                    continue
+                if mask_pii and key in _TEXT_KEYS:
+                    out[key] = mask_text(value)
+                    continue
+            out[key] = sanitize(value, mask_pii=mask_pii, redact_paths=redact_paths)
+        return out
+    if isinstance(obj, list):
+        return [sanitize(item, mask_pii=mask_pii, redact_paths=redact_paths) for item in obj]
+    return obj
+
+
 def file_dto(db: Any, row: dict[str, Any], *, mask_pii: bool = True,
              redact_paths: bool = True, include_sensitivity: bool = False) -> dict[str, Any]:
     file_id = int(row["id"])

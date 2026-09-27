@@ -189,6 +189,114 @@ def cmd_graph(args: argparse.Namespace) -> int:
     return _emit(args, data, f"entity graph: {data['stats']}")
 
 
+def _scope_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    scope: dict[str, Any] = {"kind": getattr(args, "scope", None) or "all"}
+    for key in ("query", "category", "language", "entity_type", "entity_value",
+                "start", "end", "source", "dossier_id", "prefix"):
+        value = getattr(args, key, None)
+        if value:
+            scope[key] = value
+    if getattr(args, "date_source", None):
+        scope["source"] = args.date_source
+    if getattr(args, "file_id", None) is not None:
+        scope["file_id"] = int(args.file_id)
+    return scope
+
+
+def cmd_galaxy(args: argparse.Namespace) -> int:
+    from .galaxy import GalaxyError, GalaxyService
+    db = _active_db(args)
+    service = GalaxyService(db)
+    try:
+        payload = service.galaxy(scope=_scope_from_args(args), method=args.method,
+                                 limit=args.limit, seed=args.seed, color_by=args.color_by,
+                                 collapse_duplicates=args.collapse_duplicates,
+                                 collapse_versions=args.collapse_versions,
+                                 aggregate=args.aggregate, k=args.k,
+                                 with_topics=not args.no_topics, persist=args.persist)
+    except GalaxyError as exc:
+        return _emit(args, {"available": False, "error": str(exc)}, f"galaxy unavailable: {exc}")
+    data = {k: v for k, v in payload.items() if k != "points"}
+    data["point_count"] = len(payload.get("points", []))
+    if args.json:
+        data["points"] = payload.get("points", [])[: _bound(args.limit or 500)]
+    human = (f"galaxy scope={_scope_from_args(args)['kind']} tier={payload.get('tier')} "
+             f"points={data['point_count']} clusters={len(payload.get('clusters', []))}")
+    return _emit(args, data, human)
+
+
+def cmd_clusters(args: argparse.Namespace) -> int:
+    from .galaxy import GalaxyError, GalaxyService
+    db = _active_db(args)
+    service = GalaxyService(db)
+    run_id = args.run_id
+    if args.build or not run_id:
+        existing = service.store.latest_cluster_run()
+        run_id = str(existing["run_id"]) if existing else None
+    if args.build or run_id is None:
+        try:
+            built = service.build_clusters(scope=_scope_from_args(args),
+                                           algorithm=args.algorithm, k=args.k,
+                                           seed=args.seed,
+                                           collapse_duplicates=args.collapse_duplicates,
+                                           collapse_versions=args.collapse_versions,
+                                           persist=True)
+            run_id = built["run_id"]
+        except GalaxyError as exc:
+            return _emit(args, {"available": False, "error": str(exc)},
+                         f"clusters unavailable: {exc}")
+    if not run_id:
+        return _emit(args, {"available": False, "clusters": []}, "no cluster run yet")
+    if not service.store.topics(run_id):
+        try:
+            service.build_topics(run_id, max_docs_per_cluster=args.docs,
+                                 max_representatives=3)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"topic build unavailable: {exc}")
+    rows = service.store.topics(run_id)
+    data = {"available": True, "run_id": run_id, "clusters": rows}
+    human = "\n".join(
+        f"  [{r['cluster_id']}] {r['label']} ({r['size']} docs, cohesion={r['cohesion']})"
+        for r in rows) or "no clusters"
+    return _emit(args, data, human)
+
+
+def cmd_topics(args: argparse.Namespace) -> int:
+    from .galaxy import GalaxyService
+    db = _active_db(args)
+    service = GalaxyService(db)
+    run_id = args.run_id
+    if not run_id:
+        latest = service.store.latest_cluster_run()
+        run_id = str(latest["run_id"]) if latest else None
+    if not run_id:
+        return _emit(args, {"available": False, "topics": []}, "no cluster run yet")
+    if not service.store.topics(run_id):
+        try:
+            service.build_topics(run_id, max_docs_per_cluster=args.docs,
+                                 max_representatives=3)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"topic build unavailable: {exc}")
+    rows = service.store.topics(run_id)
+    data = {"available": True, "run_id": run_id, "topics": rows}
+    human = "\n".join(
+        f"  [{r['cluster_id']}] {r['label']} -> "
+        f"{', '.join(x['term'] for x in (r.get('terms') or [])[:6])}" for r in rows) or "no topics"
+    return _emit(args, data, human)
+
+
+def cmd_context(args: argparse.Namespace) -> int:
+    from .galaxy import GalaxyError, GalaxyService
+    db = _active_db(args)
+    try:
+        data = GalaxyService(db).document_context(int(args.file_id))
+    except GalaxyError as exc:
+        return _emit(args, {"available": False, "error": str(exc)}, f"context unavailable: {exc}")
+    human = (f"context file={args.file_id} language={data['intel'].get('language')} "
+             f"neighbors={len(data.get('semantic_neighbors') or [])}")
+    return _emit(args, data, human)
+
+
 def cmd_dossier(args: argparse.Namespace) -> int:
     from .reports.dossiers import DossierService
     db = _active_db(args)
@@ -314,6 +422,22 @@ def _err(message: str, code: int = 2) -> int:
 
 
 # --- parser ------------------------------------------------------------------
+def _add_scope_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--scope", default="all",
+                        help="all|search|category|language|date|entity|dossier|prefix|file_ids")
+    parser.add_argument("--query", default=None)
+    parser.add_argument("--category", default=None)
+    parser.add_argument("--language", default=None)
+    parser.add_argument("--entity-type", dest="entity_type", default=None)
+    parser.add_argument("--entity-value", dest="entity_value", default=None)
+    parser.add_argument("--start", default=None)
+    parser.add_argument("--end", default=None)
+    parser.add_argument("--date-source", dest="date_source", default=None)
+    parser.add_argument("--dossier-id", dest="dossier_id", default=None)
+    parser.add_argument("--prefix", default=None)
+    parser.add_argument("--file-id", dest="file_id", type=int, default=None)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pis", description="36TB Intelligence operations CLI.")
     parser.add_argument("--db", default=None, help="explicit database path (default: PIS_DB_PATH)")
@@ -377,6 +501,42 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--types", default=None)
     p.add_argument("--min-docs", dest="min_docs", type=int, default=2)
     p.set_defaults(func=cmd_graph)
+
+    p = sub.add_parser("galaxy", help="bounded semantic galaxy projection")
+    _add_scope_args(p)
+    p.add_argument("--method", choices=["pca", "svd", "umap", "tsne"], default="pca")
+    p.add_argument("--color-by", dest="color_by", default="cluster")
+    p.add_argument("--limit", type=int, default=2000)
+    p.add_argument("--k", type=int, default=16)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--aggregate", choices=["points", "clusters"], default=None)
+    p.add_argument("--collapse-duplicates", dest="collapse_duplicates", action="store_true")
+    p.add_argument("--collapse-versions", dest="collapse_versions", action="store_true")
+    p.add_argument("--no-topics", dest="no_topics", action="store_true")
+    p.add_argument("--persist", action="store_true")
+    p.set_defaults(func=cmd_galaxy)
+
+    p = sub.add_parser("clusters", help="list or build scalable clusters/topics")
+    _add_scope_args(p)
+    p.add_argument("--run-id", dest="run_id", default=None)
+    p.add_argument("--build", action="store_true")
+    p.add_argument("--algorithm", choices=["minibatch-kmeans", "kmeans", "hdbscan", "dbscan"],
+                   default="minibatch-kmeans")
+    p.add_argument("--k", type=int, default=None)
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--docs", type=int, default=60)
+    p.add_argument("--collapse-duplicates", dest="collapse_duplicates", action="store_true")
+    p.add_argument("--collapse-versions", dest="collapse_versions", action="store_true")
+    p.set_defaults(func=cmd_clusters)
+
+    p = sub.add_parser("topics", help="list interpretable cluster topics")
+    p.add_argument("--run-id", dest="run_id", default=None)
+    p.add_argument("--docs", type=int, default=60)
+    p.set_defaults(func=cmd_topics)
+
+    p = sub.add_parser("context", help="contextual view for one document")
+    p.add_argument("file_id", type=int)
+    p.set_defaults(func=cmd_context)
 
     p = sub.add_parser("dossier", help="manage dossiers")
     p.add_argument("action", choices=["list", "create", "add", "remove", "freeze", "compare"])

@@ -13,7 +13,7 @@ from typing import Any
 
 from loguru import logger
 
-from .dto import MAX_LIMIT, document_dto, file_dto, pagination
+from .dto import MAX_LIMIT, document_dto, file_dto, pagination, sanitize
 
 API_VERSION = "v1"
 API_SCHEMA = "api/v1"
@@ -396,6 +396,138 @@ def create_app(db: Any = None) -> Any:
         return _ok({"definition": definition.as_dict(),
                     "artifacts": service.store.artifacts_for(report_id)})
 
+    # -- galaxy / clusters / topics / context (M020) ----------------------
+    def _scope_from(request: Any) -> dict[str, Any]:
+        params = request.query_params
+        scope: dict[str, Any] = {"kind": params.get("scope", "all")}
+        for key, param in (("query", "q"), ("category", "category"),
+                           ("language", "language"), ("entity_type", "entity_type"),
+                           ("entity_value", "entity_value"), ("start", "start"),
+                           ("end", "end"), ("source", "date_source"),
+                           ("dossier_id", "dossier_id"), ("prefix", "prefix")):
+            if params.get(param):
+                scope[key] = params[param]
+        try:
+            if params.get("file_id"):
+                scope["file_id"] = int(params["file_id"])
+            if params.get("cluster_id"):
+                scope["cluster_id"] = int(params["cluster_id"])
+        except ValueError:
+            pass
+        if params.get("run_id"):
+            scope["run_id"] = params["run_id"]
+        if params.get("ids"):
+            scope["ids"] = [int(x) for x in params["ids"].split(",") if x.strip().isdigit()]
+        return scope
+
+    async def galaxy(request: Any) -> Any:
+        from ..galaxy import GalaxyError, GalaxyService
+        params = request.query_params
+        try:
+            limit = int(params["limit"]) if params.get("limit") else None
+            k = int(params.get("k") or 16)
+            seed = int(params.get("seed") or 0)
+        except ValueError:
+            return _err("invalid numeric parameter")
+        if limit is not None:
+            limit = max(1, min(limit, 20000))
+        m, rp = _flags(request)
+        try:
+            payload = GalaxyService(db).galaxy(
+                scope=_scope_from(request), method=params.get("method", "pca"),
+                limit=limit, seed=seed, color_by=params.get("color_by", "cluster"),
+                collapse_duplicates=params.get("collapse_duplicates") == "1",
+                collapse_versions=params.get("collapse_versions") == "1",
+                aggregate=params.get("aggregate") or None, k=k,
+                with_topics=params.get("with_topics", "1") != "0", persist=False)
+        except GalaxyError as exc:
+            return _err(str(exc), status=400)
+        return _ok(sanitize(payload, mask_pii=m, redact_paths=rp))
+
+    async def clusters(request: Any) -> Any:
+        from ..galaxy import GalaxyService
+        params = request.query_params
+        service = GalaxyService(db)
+        run_id = params.get("run_id") or None
+        if not run_id:
+            latest = service.store.latest_cluster_run()
+            run_id = str(latest["run_id"]) if latest else None
+        if not run_id:
+            return _ok({"available": False, "run_id": None, "clusters": []})
+        run = service.store.cluster_run(run_id)
+        if run is None:
+            return _err("unknown run", status=404)
+        if params.get("build") == "1" and not service.store.topics(run_id):
+            try:
+                service.build_topics(run_id, max_docs_per_cluster=60, max_representatives=3)
+            except Exception as exc:  # noqa: BLE001 - optional
+                logger.debug(f"topic build unavailable: {exc}")
+        topics = service.store.topics(run_id)
+        clusters = [{"cluster_id": t["cluster_id"], "label": t["label"],
+                     "size": t["size"], "cohesion": t["cohesion"],
+                     "top_terms": [x["term"] for x in (t.get("terms") or [])[:6]]}
+                    for t in topics]
+        status = service.store.run_status(run, current_freshness=service.current_freshness())
+        m, rp = _flags(request)
+        return _ok(sanitize({"available": True, "run_id": run_id, "clusters": clusters,
+                             "status": status,
+                             "run": {k: run.get(k) for k in ("algorithm", "k", "created_at",
+                                                             "input_count", "noise_count",
+                                                             "model_key", "dim", "quality")}},
+                            mask_pii=m, redact_paths=rp))
+
+    async def cluster_detail(request: Any) -> Any:
+        from ..galaxy import GalaxyError, GalaxyService
+        run_id = request.path_params["run_id"]
+        try:
+            cluster_id = int(request.path_params["cluster_id"])
+        except ValueError:
+            return _err("invalid cluster id")
+        params = request.query_params
+        try:
+            limit = max(1, min(int(params.get("limit") or 50), 100))
+        except ValueError:
+            limit = 50
+        try:
+            payload = GalaxyService(db).cluster_detail(run_id, cluster_id, limit=limit)
+        except GalaxyError as exc:
+            return _err(str(exc), status=404)
+        m, rp = _flags(request)
+        return _ok(sanitize(payload, mask_pii=m, redact_paths=rp))
+
+    async def topics(request: Any) -> Any:
+        from ..galaxy import GalaxyService
+        params = request.query_params
+        service = GalaxyService(db)
+        run_id = params.get("run_id") or None
+        if not run_id:
+            latest = service.store.latest_cluster_run()
+            run_id = str(latest["run_id"]) if latest else None
+        if not run_id:
+            return _ok({"available": False, "run_id": None, "topics": []})
+        if not service.store.topics(run_id):
+            try:
+                service.build_topics(run_id, max_docs_per_cluster=60, max_representatives=3)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"topic build unavailable: {exc}")
+        rows = service.store.topics(run_id)
+        m, rp = _flags(request)
+        return _ok(sanitize({"available": True, "run_id": run_id, "topics": rows},
+                            mask_pii=m, redact_paths=rp))
+
+    async def context(request: Any) -> Any:
+        from ..galaxy import GalaxyError, GalaxyService
+        try:
+            file_id = int(request.path_params["file_id"])
+        except (KeyError, ValueError):
+            return _err("invalid file id")
+        try:
+            payload = GalaxyService(db).document_context(file_id)
+        except GalaxyError as exc:
+            return _err(str(exc), status=404)
+        m, rp = _flags(request)
+        return _ok(sanitize(payload, mask_pii=m, redact_paths=rp))
+
     routes = [
         Route(f"{_API_PREFIX}", index),
         Route(f"{_API_PREFIX}/health", health),
@@ -418,6 +550,11 @@ def create_app(db: Any = None) -> Any:
         Route(f"{_API_PREFIX}/dossiers/{{dossier_id}}/freeze", dossier_freeze, methods=["POST"]),
         Route(f"{_API_PREFIX}/reports", reports_index, methods=["GET", "POST"]),
         Route(f"{_API_PREFIX}/reports/{{report_id}}", report_detail),
+        Route(f"{_API_PREFIX}/galaxy", galaxy),
+        Route(f"{_API_PREFIX}/clusters", clusters),
+        Route(f"{_API_PREFIX}/clusters/{{run_id}}/{{cluster_id}}", cluster_detail),
+        Route(f"{_API_PREFIX}/topics", topics),
+        Route(f"{_API_PREFIX}/context/{{file_id}}", context),
     ]
     return Starlette(routes=routes, middleware=_middleware(_REQUEST_TIMEOUT_S, _MAX_BODY_BYTES))
 
