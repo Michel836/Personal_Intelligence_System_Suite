@@ -32,12 +32,16 @@ def _nav(at: AppTest, page: str) -> AppTest:
 
 
 def test_every_full_profile_page_renders_without_exception() -> None:
-    at = _app()
-    options = _nav_options(at)
+    probe = _app()
+    options = _nav_options(probe)
     assert options, "navigation must expose pages"
     failures: list[str] = []
     for page in options:
-        at = _nav(at, page)
+        # Streamlit 1.28 AppTest cannot reliably re-serialize selectboxes that use
+        # format_func after visiting a page. Start each page from a fresh app
+        # session so this remains a page-render smoke test rather than a harness
+        # state-serialization test.
+        at = _nav(_app(), page)
         if at.exception:
             failures.append(f"{page}: {[e.message for e in at.exception]}")
     assert not failures, failures
