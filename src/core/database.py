@@ -1348,6 +1348,12 @@ class DatabaseManager:
         min_size: Optional[int],
         max_size: Optional[int],
         document_kind: Optional[str] = None,
+        language: Optional[str] = None,
+        category: Optional[str] = None,
+        has_pii: Optional[bool] = None,
+        exclude_high_sensitivity: bool = False,
+        entity_type: Optional[str] = None,
+        entity_value: Optional[str] = None,
     ) -> tuple[list[str], list[Any]]:
         """Build the SQL filter conditions shared by every search path."""
         conditions: list[str] = []
@@ -1371,6 +1377,27 @@ class DatabaseManager:
         if document_kind:
             conditions.append("COALESCE(document_kind, 'PHYSICAL_FILE') = ?")
             params.append(document_kind)
+        # M015 intelligence filters (EXISTS subqueries; absent filters leave the
+        # canonical FTS/LIKE SQL untouched).
+        if language:
+            conditions.append("files.id IN (SELECT file_id FROM doc_language WHERE lang = ?)")
+            params.append(language)
+        if category:
+            conditions.append("files.id IN (SELECT file_id FROM doc_categories WHERE category = ?)")
+            params.append(category)
+        if has_pii is True:
+            conditions.append("files.id IN (SELECT file_id FROM doc_pii)")
+        elif has_pii is False:
+            conditions.append("files.id NOT IN (SELECT file_id FROM doc_pii)")
+        if exclude_high_sensitivity:
+            conditions.append("files.id NOT IN (SELECT file_id FROM doc_pii WHERE severity = 'high')")
+        if entity_type and entity_value is not None:
+            conditions.append("files.id IN (SELECT file_id FROM doc_entities "
+                              "WHERE entity_type = ? AND normalized_value = ?)")
+            params.extend([entity_type, entity_value])
+        elif entity_type:
+            conditions.append("files.id IN (SELECT file_id FROM doc_entities WHERE entity_type = ?)")
+            params.append(entity_type)
         return conditions, params
 
     @staticmethod
@@ -1452,6 +1479,12 @@ class DatabaseManager:
         limit: int = 100,
         include_missing: bool = False,
         document_kind: Optional[str] = None,
+        language: Optional[str] = None,
+        category: Optional[str] = None,
+        has_pii: Optional[bool] = None,
+        exclude_high_sensitivity: bool = False,
+        entity_type: Optional[str] = None,
+        entity_value: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search files by lexical text plus metadata filters.
 
@@ -1462,7 +1495,10 @@ class DatabaseManager:
         to contiguous ``LIKE`` matching instead of raising.
         """
         conditions, params = self._build_filter_conditions(
-            file_type, priority, extension, min_size, max_size, document_kind
+            file_type, priority, extension, min_size, max_size, document_kind,
+            language=language, category=category, has_pii=has_pii,
+            exclude_high_sensitivity=exclude_high_sensitivity,
+            entity_type=entity_type, entity_value=entity_value,
         )
         if not include_missing:
             conditions.append("COALESCE(files.state, 'ACTIVE') = 'ACTIVE'")

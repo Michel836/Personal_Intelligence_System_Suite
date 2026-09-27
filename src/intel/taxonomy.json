@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "categories": [
+    {"name": "administration", "description": "administrative paperwork, forms, certificates, identity, taxes and official procedures",
+     "keywords": ["administration", "formulaire", "attestation", "certificat", "impot", "impôt", "steuer", "finanzamt", "antrag", "bescheinigung", "urssaf", "caf", "prefecture", "préfecture", "meldebescheinigung", "certificate", "form"]},
+    {"name": "legal", "description": "legal documents, contracts, court decisions, lawyers and litigation",
+     "keywords": ["contrat", "contract", "vertrag", "tribunal", "court", "jugement", "avocat", "lawyer", "anwalt", "clause", "litige", "assignation", "procedure", "procédure", "recht", "gesetz", "agreement"]},
+    {"name": "finance", "description": "invoices, bank statements, taxes, insurance, budgets and financial reports",
+     "keywords": ["facture", "invoice", "rechnung", "iban", "bank", "compte", "konto", "budget", "impot", "steuer", "assurance", "versicherung", "bilan", "revenu", "einkommen", "statement", "payment", "paiement"]},
+    {"name": "work_career", "description": "jobs, recruitment, CVs, applications, professional training and career documents",
+     "keywords": ["emploi", "job", "candidature", "cv", "lebenslauf", "bewerbung", "recrutement", "recruiter", "apec", "france travail", "arbeitsamt", "stage", "internship", "career", "linkedin", "entretien", "interview"]},
+    {"name": "health", "description": "medical, health, prescriptions, lab results and wellbeing",
+     "keywords": ["sante", "santé", "medecin", "médecin", "ordonnance", "pharmacie", "gesundheit", "arzt", "rezept", "apotheke", "medical", "clinic", "analyse", "cholesterol", "vaccin"]},
+    {"name": "technology", "description": "software, code, data, AI, hardware and technical documentation",
+     "keywords": ["software", "code", "python", "database", "docker", "api", "algorithm", "neural", "machine learning", "kubernetes", "linux", "github", "hardware", "server", "cloud", "technologie", "datenbank"]},
+    {"name": "education", "description": "courses, degrees, schools, students and learning material",
+     "keywords": ["formation", "cours", "course", "ecole", "école", "schule", "universite", "université", "universität", "student", "diplome", "diplôme", "master", "bootcamp", "training", "certification"]},
+    {"name": "personal", "description": "personal correspondence, family and private life",
+     "keywords": ["famille", "family", "familie", "maman", "papa", "anniversaire", "vacances", "holiday", "urlaub", "message", "lettre", "brief", "photo", "mariage"]},
+    {"name": "real_estate", "description": "housing, rent, leases, property and construction",
+     "keywords": ["appartement", "immobilier", "loyer", "miete", "wohnung", "bail", "lease", "propriete", "propriété", "syndic", "copropriete", "copropriété", "terrain", "veranda", "habitation"]},
+    {"name": "travel", "description": "trips, transport, bookings, tickets and accommodation",
+     "keywords": ["voyage", "travel", "reise", "billet", "ticket", "train", "flug", "flight", "hotel", "reservation", "réservation", "booking", "airport", "bahnhof"]},
+    {"name": "shopping", "description": "orders, purchases, receipts and retail",
+     "keywords": ["commande", "order", "bestellung", "achat", "purchase", "kauf", "facture", "receipt", "livraison", "lieferung", "amazon", "boutique"]},
+    {"name": "media", "description": "images, audio, video, books and entertainment media",
+     "keywords": ["photo", "image", "musique", "music", "musik", "film", "video", "vidéo", "audiobook", "livre", "buch", "book", "podcast"]}
+  ]
+}
