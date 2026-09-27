@@ -150,6 +150,7 @@ _NAVIGATION: list[tuple[str, Capability]] = [
     ("🧠 Document Intelligence", Capability.INTELLIGENCE),
     ("🧭 Timeline & Graph", Capability.GRAPH),
     ("🛠️ Ingestion & Coverage", Capability.INGESTION),
+    ("📁 Dossiers & Reports", Capability.REPORTS),
     ("🧠 AI Search", Capability.SEMANTIC_SEARCH),
     ("💬 AI Chat", Capability.AI_CHAT),
     ("🏷️ Tags & Favorites", Capability.TAGS),
@@ -273,6 +274,10 @@ def main():
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Ingestion & Coverage page"):
             from src.ui.ingest_page import render as render_ingest_page
             render_ingest_page()
+    elif page == "📁 Dossiers & Reports":
+        with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Dossiers & Reports page"):
+            from src.ui.reports_page import render as render_reports_page
+            render_reports_page()
     elif page == "🏷️ Tags & Favorites":
         with ActivityTracker(ActivityType.UI_INTERACTION, "Opening Tags & Favorites page"):
             tags_favorites_page()
@@ -418,6 +423,16 @@ def search_page():
                         # Show analysis of selected files
                         st.session_state['show_selection_analysis'] = True
                 
+                st.markdown("---")
+                st.subheader("📁 Dossier")
+                try:
+                    from src.ui.reports_page import add_to_dossier_widget
+                    add_to_dossier_widget(st.session_state.db,
+                                          [int(i['id']) for i in selected_items],
+                                          key_prefix="search_results")
+                except Exception as exc:  # noqa: BLE001 - optional action
+                    st.caption(f"Dossier action unavailable: {type(exc).__name__}")
+
                 # Bulk tagging modal
                 if st.session_state.get('show_bulk_tagging', False):
                     with st.form("bulk_tagging"):

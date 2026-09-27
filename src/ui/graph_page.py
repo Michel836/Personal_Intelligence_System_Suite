@@ -131,6 +131,15 @@ def _render_graph(g: DocumentGraph) -> None:
     for e in res["edges"][:200]:
         st.text(f"{e['type']} · {e['source']} → {e['target']} · score={e['score']} · "
                 f"{e.get('evidence')}")
+    with st.expander("📁 Dossier from this bounded neighborhood"):
+        st.caption("Only the nodes shown above (already filtered by the graph service) "
+                   "are offered; hidden/sensitive nodes are never added silently.")
+        try:
+            from src.ui.reports_page import add_to_dossier_widget
+            node_ids = [int(n["id"]) for n in res["nodes"] if str(n.get("id", "")).isdigit()]
+            add_to_dossier_widget(st.session_state.db, node_ids, key_prefix="m016_neighborhood")
+        except Exception as exc:  # noqa: BLE001 - optional action
+            st.caption(f"Dossier action unavailable: {type(exc).__name__}")
 
     st.divider()
     st.subheader("Entity / document graph")
