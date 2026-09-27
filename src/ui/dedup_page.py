@@ -7,17 +7,18 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
 from ..core.launch_profile import Capability, has_capability
 
 
-def _db():
+def _db() -> Any:
     return st.session_state.db
 
 
-def _store():
+def _store() -> Any:
     from ..dedup import DedupStore
 
     if "dedup_store" not in st.session_state:
@@ -29,7 +30,7 @@ def _semantic_available() -> bool:
     return has_capability(Capability.SEMANTIC_SEARCH) and bool(os.environ.get("PIS_EMBEDDING_STORE_DIR"))
 
 
-def _embed_store():
+def _embed_store() -> Any:
     from ..intelligence.embedding_store import EmbeddingMatrixStore
 
     if "dedup_embed_store" not in st.session_state:
@@ -73,7 +74,7 @@ def render() -> None:
         _render_search(db, store)
 
 
-def _render_exact(db, store) -> None:
+def _render_exact(db: Any, store: Any) -> None:
     from ..dedup import ExactDuplicateEngine
 
     st.subheader("Exact duplicates (identical bytes)")
@@ -107,7 +108,7 @@ def _render_exact(db, store) -> None:
                 st.text(f"[{m['id']}] ({tag}, {m['state']}) {m['path']}")
 
 
-def _render_near(db, store) -> None:
+def _render_near(db: Any, store: Any) -> None:
     from ..dedup import NearDuplicateEngine
 
     st.subheader("Near duplicates (high semantic similarity, not byte-identical)")
@@ -129,7 +130,7 @@ def _render_near(db, store) -> None:
     st.write(f"Stored near-duplicate edges: **{n:,}**")
 
 
-def _render_versions(db, store) -> None:
+def _render_versions(db: Any, store: Any) -> None:
     from ..dedup import VersionTracker
 
     st.subheader("Version families (explicit-marker confidence)")
@@ -151,7 +152,7 @@ def _render_versions(db, store) -> None:
             st.text(f"  [{m['id']}] {order} · {m['state']} · {m['path']}")
 
 
-def _family_members(store, family_id: int):
+def _family_members(store: Any, family_id: int) -> list[dict[str, Any]]:
     with store.db.get_connection() as conn:
         return [dict(r) for r in conn.execute(
             "SELECT vm.file_id AS id, vm.rank, vm.is_primary, f.path, f.state "
@@ -159,7 +160,7 @@ def _family_members(store, family_id: int):
             "WHERE vm.family_id=? ORDER BY vm.rank ASC", (family_id,)).fetchall()]
 
 
-def _render_related(db, store) -> None:
+def _render_related(db: Any, store: Any) -> None:
     from ..dedup.related import RelatedDocuments
 
     st.subheader("Related documents")
@@ -179,7 +180,7 @@ def _render_related(db, store) -> None:
             st.text(f"[{r['id']}] {r.get('semantic_similarity')} · {r['reason']} · {r['path']}")
 
 
-def _render_search(db, store) -> None:
+def _render_search(db: Any, store: Any) -> None:
     from ..dedup.rerank import rerank_search
 
     st.subheader("Reranked search (lexical + semantic fusion)")
