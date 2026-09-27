@@ -153,7 +153,7 @@ def detect_pii(text: str, *, store: Any = None) -> list[dict[str, Any]]:
     collect(_EMAIL_RE.finditer(raw), "email", confidence=0.95, detector="email")
     collect((m for m in _IBAN_RE.finditer(raw) if iban_ok(m.group(0))), "iban",
             confidence=0.95, detector="iban_mod97")
-    def _card_ok(m) -> bool:
+    def _card_ok(m: re.Match[str]) -> bool:
         digits = re.sub(r"\D", "", m.group(0))
         return len(digits) in (15, 16) and digits[0] in "3456" and luhn_ok(digits)
     collect((m for m in _CARD_RE.finditer(raw) if _card_ok(m)), "card",
