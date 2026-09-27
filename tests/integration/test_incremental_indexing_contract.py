@@ -91,17 +91,31 @@ def test_upsert_refreshes_modified_metadata(db, file_info_factory, tmp_path) -> 
 
 def test_upsert_preserves_extracted_content(db, file_info_factory, tmp_path) -> None:
     path = tmp_path / "a.txt"
+    file_id = db.save_file(file_info_factory(path, size_bytes=10, priority=Priority.MEDIUM))
+    db.update_content(file_id, "extracted payload text")
+
+    # True metadata-only rescan (same size + mtime) must not wipe content.
+    db.save_file(file_info_factory(path, size_bytes=10, priority=Priority.HIGH))
+
+    row = db.search_files()[0]
+    assert row["priority"] == "high"
+    assert row["content_text"] == "extracted payload text"
+    assert row["content_extracted"] == 1
+    assert len(db.search_files(query="extracted")) == 1
+
+
+def test_upsert_invalidates_content_when_file_changes(db, file_info_factory, tmp_path) -> None:
+    path = tmp_path / "a.txt"
     file_id = db.save_file(file_info_factory(path, size_bytes=10))
     db.update_content(file_id, "extracted payload text")
 
-    # Metadata-only rescan must not wipe extracted content.
+    # A real content change (size and/or mtime) must invalidate stale content.
     db.save_file(file_info_factory(path, size_bytes=25))
 
     row = db.search_files()[0]
     assert row["size_bytes"] == 25
-    assert row["content_text"] == "extracted payload text"
-    assert row["content_extracted"] == 1
-    assert len(db.search_files(query="extracted")) == 1
+    assert row["content_extracted"] == 0
+    assert row["content_text"] is None
 
 
 def test_checksum_persists(db, file_info_factory, tmp_path) -> None:

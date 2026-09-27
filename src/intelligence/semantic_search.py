@@ -3,6 +3,7 @@
 import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+import hashlib
 import json
 import os
 from functools import lru_cache
@@ -58,38 +59,54 @@ class SemanticSearchEngine:
             texts, batch_size=batch_size, show_progress=False
         )
 
-    def _refresh_store(self, store, documents):
-        """Ensure the store covers the current corpus (rebuild or append).
+    @staticmethod
+    def _content_hash(text: str) -> str:
+        """Stable fingerprint of extracted content (detects changed documents)."""
+        return hashlib.blake2b(text.encode("utf-8", "ignore"), digest_size=16).hexdigest()
 
-        The store is loaded at most once per process: re-reading ``matrix.npy``
-        on every query would be an O(corpus) disk read. Appends are incremental
-        (in-place memmap writes), so only genuinely new ids are embedded.
+    def _refresh_store(self, store, documents):
+        """Ensure the store covers the current corpus (rebuild/append/prune).
+
+        The store is loaded at most once per process. Only genuinely new or
+        *changed* content is embedded (content-hash compare), and rows whose
+        document is no longer present (deleted/MISSING/empty content) are
+        pruned so stale vectors cannot crowd top-k.
         """
         valid = []
         id_map = {}
+        hashes = {}
         for doc in documents:
             content = (doc.get("content_text") or "").strip()
             if content:
                 doc_id = int(doc["id"])
                 valid.append((doc_id, content))
                 id_map[doc_id] = doc
+                hashes[doc_id] = self._content_hash(content)
         if store.matrix is None or store.meta is None:
             loaded = store.load()
         else:
             loaded = True
-        existing = set(store.meta.ids) if (loaded and store.meta) else set()
         if not loaded:
             embeddings = self._embed_texts([t for _, t in valid])
-            pairs = [(i, e) for (i, _), e in zip(valid, embeddings) if e is not None]
+            pairs = [(i, e, hashes[i]) for (i, _), e in zip(valid, embeddings) if e is not None]
             if pairs:
-                store.save([i for i, _ in pairs], np.vstack([e for _, e in pairs]))
-        else:
-            missing = [(i, t) for i, t in valid if i not in existing]
-            if missing:
-                embeddings = self._embed_texts([t for _, t in missing])
-                pairs = [(i, e) for (i, _), e in zip(missing, embeddings) if e is not None]
-                if pairs:
-                    store.append([i for i, _ in pairs], np.vstack([e for _, e in pairs]))
+                store.save([i for i, _, _ in pairs], np.vstack([e for _, e, _ in pairs]),
+                           hashes=[h for _, _, h in pairs])
+            return id_map
+        # Drop rows for documents that no longer exist before ranking.
+        removed = store.prune(set(id_map))
+        existing = store.hash_map()
+        missing = [(i, t) for i, t in valid if existing.get(i) != hashes[i]]
+        if missing:
+            embeddings = self._embed_texts([t for _, t in missing])
+            pairs = [(i, e, hashes[i]) for (i, _), e in zip(missing, embeddings) if e is not None]
+            if pairs:
+                store.append([i for i, _, _ in pairs], np.vstack([e for _, e, _ in pairs]),
+                             hashes=[h for _, _, h in pairs])
+        if removed or missing:
+            # A changed corpus must not be masked by cached query results.
+            with self.query_cache_lock:
+                self.query_cache.clear()
         return id_map
 
     def is_available(self) -> bool:
@@ -338,6 +355,7 @@ class SemanticSearchEngine:
             WHERE content_extracted = 1
             AND content_text IS NOT NULL
             AND length(content_text) > 50
+            AND COALESCE(state, 'ACTIVE') = 'ACTIVE'
             ORDER BY priority DESC, modified_at DESC
         """
         with self.db.get_connection() as conn:

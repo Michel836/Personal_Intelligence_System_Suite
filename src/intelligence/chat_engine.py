@@ -1,6 +1,7 @@
 """Conversational AI engine using Ollama."""
 
 import json
+import os
 import time
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
@@ -18,6 +19,39 @@ except ImportError:
 from ..core.database import DatabaseManager
 from .semantic_search import SemanticSearchEngine
 from .simple_chat_engine import SimpleChatEngine
+
+
+def _ollama_supports_think() -> bool:
+    """Whether the installed ollama client accepts the ``think`` kwarg.
+
+    ``requirements.txt`` pins ``ollama==0.1.7`` (which does not); newer clients
+    do. Passing it unconditionally raises ``TypeError`` and silently disables
+    retrieval-augmented chat, so it must be probed.
+    """
+    if not OLLAMA_AVAILABLE:
+        return False
+    try:
+        import inspect
+
+        return "think" in inspect.signature(ollama.chat).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _llm_num_ctx() -> int:
+    """Context window for chat generation (locked M010 profile: 4096 default)."""
+    try:
+        return max(512, int(os.environ.get("PIS_LLM_NUM_CTX", "4096")))
+    except ValueError:
+        return 4096
+
+
+def _llm_num_predict() -> int:
+    """Maximum generated tokens (bounds latency for large models)."""
+    try:
+        return max(32, int(os.environ.get("PIS_LLM_MAX_TOKENS", "384")))
+    except ValueError:
+        return 384
 
 
 class ChatEngine:
@@ -90,7 +124,15 @@ Guidelines:
         try:
             # Get models with timeout handling
             models = ollama.list()
-            available_models = [model.model for model in models.models]
+            raw = models.get("models", []) if isinstance(models, dict) else getattr(models, "models", [])
+            available_models = []
+            for model in raw:
+                if isinstance(model, dict):
+                    name = model.get("model") or model.get("name")
+                else:
+                    name = getattr(model, "model", None) or getattr(model, "name", None)
+                if name:
+                    available_models.append(name)
             
             if self.model_name in available_models:
                 logger.info(f"Model {self.model_name} is available")
@@ -113,7 +155,7 @@ Guidelines:
             return False
     
     @safe_ai_operation
-    @timeout_operation(45.0)  # 45 second timeout for chat operations
+    @timeout_operation(float(os.environ.get("PIS_LLM_CHAT_TIMEOUT", "90")))  # large local models need headroom
     def chat(self, user_message: str, search_context: bool = True) -> Dict[str, Any]:
         """Have a conversation with the AI about documents."""
         
@@ -132,23 +174,32 @@ Guidelines:
             # Build conversation context
             conversation_context = self._build_context(user_message, context_documents)
             
-            # Generate AI response with timeout
+            # Generate AI response with timeout. ``think`` is only supported by
+            # newer ollama clients, so it is added conditionally to stay
+            # compatible with the pinned dependency.
             from ..core.ai_config import llm_think
-            response = ollama.chat(
-                model=self.model_name,
-                messages=[
+            chat_kwargs = {
+                "model": self.model_name,
+                "messages": [
                     {"role": "system", "content": self.system_prompt},
                     *self.conversation_history,
                     {"role": "user", "content": conversation_context}
                 ],
-                think=llm_think(),
-                options={
+                "options": {
                     "temperature": 0.7,
                     "top_p": 0.9,
+                    # Ollama ignores ``max_tokens``; ``num_predict`` is the real
+                    # bound. Without it large QUALITY models generate past the
+                    # 45s chat timeout. num_ctx matches the locked 4096 profile.
                     "max_tokens": 1000,
+                    "num_predict": _llm_num_predict(),
+                    "num_ctx": _llm_num_ctx(),
                     "timeout": 30.0  # 30 second timeout
-                }
-            )
+                },
+            }
+            if _ollama_supports_think():
+                chat_kwargs["think"] = llm_think()
+            response = ollama.chat(**chat_kwargs)
             
             ai_response = response['message']['content']
             

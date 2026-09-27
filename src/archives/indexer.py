@@ -123,12 +123,18 @@ class ArchiveIndexer:
         fingerprint = inspector.fingerprint()
 
         state = self.db.get_archive_index_state(parent_id) or {}
+        # Only trust the fast path when member virtual paths still follow the
+        # current parent path (a renamed container must re-index).
         if (
             not force
             and state.get("archive_fingerprint") == fingerprint
             and state.get("archive_processing_version") == ARCHIVE_PROCESSING_VERSION
             and state.get("archive_status") in {ArchiveStatus.OK.value, ArchiveStatus.LIMIT_MEMBER_COUNT.value}
+            and self._members_match_parent(parent_id, parent_path)
         ):
+            # Revive members that were cascaded MISSING while the container was
+            # absent (the fingerprint proves the member set is unchanged).
+            self.db.reactivate_archive_members(parent_id)
             result.unchanged = True
             result.status = state.get("archive_status") or ArchiveStatus.OK.value
             result.member_count = state.get("archive_member_count") or 0
@@ -313,6 +319,17 @@ class ArchiveIndexer:
     @staticmethod
     def _is_nested_archive(md: Dict) -> bool:
         return _format_from_name(md.get("member_path", "")) is not None
+
+    def _members_match_parent(self, parent_id: int, parent_path: str) -> bool:
+        """True when every member's virtual path still uses ``parent_path``."""
+        escaped = parent_path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self.db.get_connection() as conn:
+            bad = conn.execute(
+                "SELECT COUNT(*) FROM files WHERE document_kind = 'ARCHIVE_MEMBER' "
+                "AND archive_parent_id = ? AND path NOT LIKE ? ESCAPE '\\'",
+                (parent_id, f"{escaped}!/%"),
+            ).fetchone()[0]
+        return int(bad) == 0
 
     @staticmethod
     def _to_dict(m: ArchiveMember) -> Dict:

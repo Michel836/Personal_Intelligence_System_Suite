@@ -564,6 +564,22 @@ class DatabaseManager:
             conn.commit()
             return cur.rowcount or 0
 
+    def reactivate_archive_members(self, parent_id: int) -> int:
+        """Revive members of an archive that is present and unchanged again.
+
+        Only safe when the container fingerprint is unchanged (so the member
+        set is identical); used to recover members after a delete/restore or a
+        parent path rewrite.
+        """
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE files SET member_state = 'ACTIVE', state = 'ACTIVE' "
+                "WHERE document_kind = 'ARCHIVE_MEMBER' AND archive_parent_id = ? AND state = 'MISSING'",
+                (parent_id,),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+
     def get_archive_members(
         self, parent_id: int, *, include_missing: bool = False, limit: int = 10000
     ) -> List[Dict[str, Any]]:
@@ -766,6 +782,20 @@ class DatabaseManager:
                   AND {self._scope_clause('path')}""",
             (run["volume_id"], run_id, root, self._like_scope(root)),
         )
+        # Cascade: a deleted/vanished archive container must not leave its
+        # virtual members ACTIVE, or they would surface as stale search hits.
+        # Nested archives can be several levels deep, so iterate to closure
+        # (archive depth is bounded by ArchiveLimits.max_depth).
+        for _ in range(8):
+            cur = conn.execute(
+                """UPDATE files SET member_state = 'MISSING', state = 'MISSING'
+                   WHERE document_kind = 'ARCHIVE_MEMBER' AND state = 'ACTIVE'
+                     AND archive_parent_id IN (
+                         SELECT id FROM files WHERE state = 'MISSING'
+                     )"""
+            )
+            if not cur.rowcount:
+                break
         return int(cursor.rowcount)
 
     def _associate_renames(self, conn, run_id: int) -> int:
@@ -902,6 +932,14 @@ class DatabaseManager:
                     volume_id = COALESCE(excluded.volume_id, files.volume_id),
                     last_seen_scan_id = COALESCE(excluded.last_seen_scan_id, files.last_seen_scan_id),
                     state = CASE WHEN excluded.last_seen_scan_id IS NOT NULL THEN 'ACTIVE' ELSE files.state END,
+                    content_extracted = CASE
+                        WHEN files.size_bytes IS NOT excluded.size_bytes
+                          OR files.modified_at IS NOT excluded.modified_at
+                        THEN 0 ELSE files.content_extracted END,
+                    content_text = CASE
+                        WHEN files.size_bytes IS NOT excluded.size_bytes
+                          OR files.modified_at IS NOT excluded.modified_at
+                        THEN NULL ELSE files.content_text END,
                     device_id = COALESCE(excluded.device_id, files.device_id),
                     inode = COALESCE(excluded.inode, files.inode),
                     indexed_at = CURRENT_TIMESTAMP
@@ -994,6 +1032,14 @@ class DatabaseManager:
                         volume_id = COALESCE(excluded.volume_id, files.volume_id),
                         last_seen_scan_id = COALESCE(excluded.last_seen_scan_id, files.last_seen_scan_id),
                         state = CASE WHEN excluded.last_seen_scan_id IS NOT NULL THEN 'ACTIVE' ELSE files.state END,
+                        content_extracted = CASE
+                            WHEN files.size_bytes IS NOT excluded.size_bytes
+                              OR files.modified_at IS NOT excluded.modified_at
+                            THEN 0 ELSE files.content_extracted END,
+                        content_text = CASE
+                            WHEN files.size_bytes IS NOT excluded.size_bytes
+                              OR files.modified_at IS NOT excluded.modified_at
+                            THEN NULL ELSE files.content_text END,
                         device_id = COALESCE(excluded.device_id, files.device_id),
                         inode = COALESCE(excluded.inode, files.inode),
                         indexed_at = CURRENT_TIMESTAMP

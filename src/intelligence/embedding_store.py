@@ -4,7 +4,7 @@ Layout (under ``data/cache/embeddings/<model_key>/``)::
 
     matrix.npy   float32, row-major, L2-normalized, shape (capacity, dim)
     meta.json    {version, model_key, model_name, dim, dtype, normalized,
-                  count, capacity, ids}
+                  count, capacity, ids, content_hashes}
 
 Query = a single matrix-vector product (no per-query normalization, no list ->
 matrix rebuild). The store validates shape/dim/count/finiteness on load and
@@ -16,6 +16,11 @@ previous O(total rows) full rewrite. Capacity grows geometrically and the file i
 replaced atomically (``os.replace``) so an interrupted grow never corrupts the
 store. ``meta.json`` remains the source of truth for ``count``/``ids``, which
 keeps the on-disk contract (and its corruption detection) unchanged.
+
+M010 scale trial: ``content_hashes`` is a per-row content fingerprint (parallel
+to ``ids``). It lets the semantic layer re-embed *changed* content and prune rows
+whose document vanished, so stale vectors can never crowd top-k. Legacy stores
+without hashes load with empty hashes and are refreshed on first use.
 """
 from __future__ import annotations
 
@@ -47,7 +52,14 @@ class StoreMeta:
     normalized: bool = True
     version: int = STORE_VERSION
     ids: list[int] = field(default_factory=list)
+    content_hashes: list[str] = field(default_factory=list)
     capacity: int = 0
+
+    def hash_map(self) -> dict[int, str]:
+        """Return ``{doc_id: content_hash}`` (omits rows with unknown hashes)."""
+        if len(self.content_hashes) != len(self.ids):
+            return {}
+        return {i: h for i, h in zip(self.ids, self.content_hashes, strict=False) if h}
 
 
 class EmbeddingMatrixStore:
@@ -74,6 +86,12 @@ class EmbeddingMatrixStore:
     def exists(self) -> bool:
         return self._matrix_path.exists() and self._meta_path.exists()
 
+    def hash_map(self) -> dict[int, str]:
+        """Return ``{doc_id: content_hash}`` for the loaded store."""
+        if self.meta is None:
+            return {}
+        return self.meta.hash_map()
+
     def _read_matrix(self) -> np.ndarray:
         return np.asarray(np.load(self._matrix_path, mmap_mode="r"))
 
@@ -94,6 +112,9 @@ class EmbeddingMatrixStore:
             capacity = int(meta.capacity) if meta.capacity else int(matrix.shape[0])
             self._validate(matrix, meta, capacity)
             meta.capacity = capacity
+            if len(meta.content_hashes) != meta.count:
+                # Legacy/foreign store without hashes: refresh on first use.
+                meta.content_hashes = [""] * meta.count
             self.meta, self.matrix = meta, matrix[: meta.count]
             return True
         except Exception as exc:  # noqa: BLE001
@@ -134,13 +155,16 @@ class EmbeddingMatrixStore:
             self._matrix_path, mode="w+", dtype=np.float32, shape=(capacity, self.dim)
         )
 
-    def save(self, ids: Iterable[int], matrix: np.ndarray) -> None:
+    def save(self, ids: Iterable[int], matrix: np.ndarray, hashes: Iterable[str] | None = None) -> None:
         ids = [int(i) for i in ids]
         matrix = self.normalize(matrix)
         if matrix.shape[0] != len(ids):
             raise EmbeddingStoreError("ids/matrix length mismatch")
         if matrix.shape[1] != self.dim:
             raise EmbeddingStoreError("dimension mismatch on save")
+        content_hashes = [str(h) for h in hashes] if hashes is not None else [""] * len(ids)
+        if len(content_hashes) != len(ids):
+            raise EmbeddingStoreError("ids/hash length mismatch")
         capacity = max(len(ids) + max(1024, len(ids) // 10), 1)
         buf = self._allocate(capacity)
         if len(ids):
@@ -152,6 +176,7 @@ class EmbeddingMatrixStore:
             dim=self.dim,
             count=len(ids),
             ids=ids,
+            content_hashes=content_hashes,
             capacity=capacity,
         )
         self._write_meta()
@@ -177,13 +202,14 @@ class EmbeddingMatrixStore:
         self.meta.capacity = new_capacity
 
     # -- incremental -------------------------------------------------------
-    def append(self, ids: Iterable[int], matrix: np.ndarray) -> None:
+    def append(self, ids: Iterable[int], matrix: np.ndarray, hashes: Iterable[str] | None = None) -> None:
         """Incrementally upsert rows (replacing existing ids) in place.
 
         Uses the reserved capacity so repeated small appends are O(rows added)
         rather than O(total rows). Row order is an internal detail (search uses
         the id array for deterministic tie-breaking), but the id/count contract
-        is preserved.
+        is preserved. ``hashes`` stores a per-row content fingerprint so the
+        semantic layer can detect changed content and refresh it.
         """
         ids = [int(i) for i in ids]
         matrix = self.normalize(matrix)
@@ -191,28 +217,64 @@ class EmbeddingMatrixStore:
             raise EmbeddingStoreError("ids/matrix length mismatch")
         if matrix.shape[1] != self.dim:
             raise EmbeddingStoreError("dimension mismatch on append")
+        content_hashes = [str(h) for h in hashes] if hashes is not None else [""] * len(ids)
+        if len(content_hashes) != len(ids):
+            raise EmbeddingStoreError("ids/hash length mismatch")
         if self.matrix is None or self.meta is None:
             if not self.load():
-                self.save(ids, matrix)
+                self.save(ids, matrix, content_hashes)
                 return
+        if len(self.meta.content_hashes) != self.meta.count:
+            self.meta.content_hashes = [""] * self.meta.count
 
         id_to_row = {doc_id: row for row, doc_id in enumerate(self.meta.ids)}
         additions = sum(1 for doc_id in ids if doc_id not in id_to_row)
         self._ensure_capacity(self.meta.count + additions)
 
         buf = self._open_rw()
-        for doc_id, vec in zip(ids, matrix):
+        for doc_id, vec, chash in zip(ids, matrix, content_hashes, strict=False):
             row = id_to_row.get(doc_id)
             if row is None:
                 row = self.meta.count
                 self.meta.ids.append(doc_id)
+                self.meta.content_hashes.append(chash)
                 self.meta.count += 1
                 id_to_row[doc_id] = row
+            else:
+                self.meta.content_hashes[row] = chash
             buf[row] = vec
         buf.flush()
         del buf
         self._write_meta()
         self.matrix = self._read_matrix()[: self.meta.count]
+
+    def prune(self, keep_ids: Iterable[int]) -> int:
+        """Drop rows whose ids are not in ``keep_ids``; returns removed count.
+
+        Rows are compacted in place so a deleted/changed document can never
+        occupy a top-k slot with a stale vector. The reserved capacity is kept.
+        """
+        keep = {int(i) for i in keep_ids}
+        if (self.matrix is None or self.meta is None) and not self.load():
+            return 0
+        if len(self.meta.content_hashes) != self.meta.count:
+            self.meta.content_hashes = [""] * self.meta.count
+        rows = [r for r, doc_id in enumerate(self.meta.ids) if doc_id in keep]
+        removed = self.meta.count - len(rows)
+        if removed <= 0:
+            return 0
+        buf = self._open_rw()
+        for dst, src in enumerate(rows):
+            if dst != src:
+                buf[dst] = buf[src]
+        buf.flush()
+        del buf
+        self.meta.ids = [self.meta.ids[r] for r in rows]
+        self.meta.content_hashes = [self.meta.content_hashes[r] for r in rows]
+        self.meta.count = len(self.meta.ids)
+        self._write_meta()
+        self.matrix = self._read_matrix()[: self.meta.count]
+        return removed
 
     # -- query -------------------------------------------------------------
     def search(self, query: np.ndarray, top_k: int = 10) -> list[tuple[int, float]]:

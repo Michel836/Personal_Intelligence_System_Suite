@@ -7,6 +7,7 @@ association.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 from pathlib import Path
@@ -257,6 +258,7 @@ def test_reconnect_restores_active_and_content(db: DatabaseManager, tmp_path: Pa
     root.mkdir()
     target = root / "a.txt"
     target.write_text("a", encoding="utf-8")
+    target_stat = target.stat()
     volume = _vol("V1", tmp_path)
     _scan(db, root, volume)
     file_id = db.search_files()[0]["id"]
@@ -266,13 +268,36 @@ def test_reconnect_restores_active_and_content(db: DatabaseManager, tmp_path: Pa
     _scan(db, root, volume)
     assert _state(db)["a.txt"] == "MISSING"
 
+    # Genuine reconnect: the file reappears with identical metadata, so the
+    # row and its extracted content survive (no needless re-extraction).
+    mtime = target_stat.st_mtime
     target.write_text("a", encoding="utf-8")
+    os.utime(target, (target_stat.st_atime, mtime))
     _scan(db, root, volume)
     row = db.search_files()[0]
     assert row["state"] == "ACTIVE"
     assert row["id"] == file_id
     assert row["content_text"] == "important extracted text"
     assert len(db.search_files(query="important")) == 1
+
+
+def test_recreated_file_with_changed_metadata_invalidates_content(db: DatabaseManager, tmp_path: Path) -> None:
+    root = tmp_path / "v"
+    root.mkdir()
+    target = root / "a.txt"
+    target.write_text("a", encoding="utf-8")
+    volume = _vol("V1", tmp_path)
+    _scan(db, root, volume)
+    file_id = db.search_files()[0]["id"]
+    db.update_content(file_id, "important extracted text")
+
+    # Same path, same size, newer mtime -> content must not stay stale.
+    target.write_text("b", encoding="utf-8")
+    _scan(db, root, volume)
+    row = db.search_files()[0]
+    assert row["state"] == "ACTIVE"
+    assert row["content_extracted"] == 0
+    assert row["content_text"] is None
 
 
 def test_reconciliation_is_idempotent(db: DatabaseManager, tmp_path: Path) -> None:
