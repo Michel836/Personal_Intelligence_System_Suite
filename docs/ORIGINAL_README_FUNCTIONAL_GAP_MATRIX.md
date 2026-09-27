@@ -116,6 +116,7 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | A15 | Similar-document search | A | `dedup.related.RelatedDocuments` + `semantic_search.find_similar_documents` | IMPLEMENTED (M014) | yes | yes | related panel in Duplicates page | P2 | M014 | DONE |
 | A16 | Vision (CLIP/LLaVA) | B/C | — | PNI | no | no | `llava` config placeholder | P3 | BACKLOG | IMPLEMENT |
 | A17 | Reranking (cross-encoder) | B | `dedup.rerank` (RRF fusion + exact-match boost) | IMPLEMENTED (M014) | yes | yes | transparent RRF; lexical fallback preserved | P2 | M014 | DONE |
+| A17b | Document prioritization / importance | B | `graph.priority` (transparent weighted signals) | IMPLEMENTED (M016) | yes | yes | user signals dominate; PII is a filter; no opaque AI | P2 | M016 | DONE |
 | A18 | Agentic behavior | C | — (MCP tools only) | PNI | no | no | — | P3 | BACKLOG | DROP |
 | A19 | MCP server | B | `mcp_server.py` | IMPLEMENTED | yes | partial | 3 read-only tools | P2 | CURRENT | KEEP |
 | A20 | Contextual intelligence / recommendations | A | `ui/intelligence.py` | PARTIAL | no | no | heuristic; not wired to a page | P2 | M020 | IMPROVE |
@@ -127,8 +128,8 @@ REPLACE, DEPRECATE, DROP, VERIFY.
 | V1 | Dashboard | A | `ui/dashboard.py`, `analytics/dashboard.py` | IMPLEMENTED | UI smoke | yes | — | P1 | CURRENT | KEEP |
 | V2 | Statistics | A | `statistics_page` | IMPLEMENTED | UI smoke | yes | — | P1 | CURRENT | KEEP |
 | V3 | Charts (Plotly) | A | `visualizations/advanced_viz.py` | IMPLEMENTED | partial | yes | — | P1 | CURRENT | KEEP |
-| V4 | Timeline | B | `analytics.get_timeline_stats`, viz temporal flow | IMPLEMENTED | partial | partial | basic | P2 | M016 | IMPROVE |
-| V5 | Network graph | B | `advanced_viz.create_document_network_graph` | IMPLEMENTED | partial | partial | NetworkX, not Sigma.js | P2 | M016 | IMPROVE |
+| V4 | Timeline | B | `graph.timeline.TimelineService` | IMPLEMENTED (M016) | yes | yes | provenance-aware date sources, filters, day/week/month/year grouping | P2 | M016 | DONE |
+| V5 | Network graph | B | `graph.relations.RelationService` + `graph.graph.plotly_network` | IMPLEMENTED (M016) | yes | yes | bounded canonical relations; NetworkX/Plotly; no graph DB | P2 | M016 | DONE |
 | V6 | 3D galaxy | B/C | `advanced_viz.create_file_universe_3d` | PARTIAL | no | no | Plotly 3D, not Three.js galaxy | P3 | M020 | IMPROVE |
 | V7 | Advanced visualization suite | B | `advanced_viz` (7 views) | IMPLEMENTED | partial | partial | — | P2 | CURRENT | KEEP |
 | V8 | Activity monitor + floating badge | A | `real_time_monitor` | IMPLEMENTED | UI smoke | partial | — | P1 | CURRENT | KEEP |
