@@ -41,3 +41,14 @@ def test_fast_scan_refuses_root_when_filesystem_identity_is_unavailable(monkeypa
 
     assert list(scanner.fast_scan(Path("/missing"))) == []
     assert scanner.is_running is False
+
+
+def test_fast_scanner_skips_file_symlinks(tmp_path):
+    scanner = FastScannerEngine()
+    target = tmp_path / "target.txt"
+    target.write_text("content", encoding="utf-8")
+    alias = tmp_path / "alias.txt"
+    alias.symlink_to(target)
+
+    assert scanner._should_skip_file_fast(alias) is True
+    assert scanner._should_skip_file_fast(target) is False
