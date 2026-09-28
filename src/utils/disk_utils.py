@@ -11,8 +11,8 @@ def get_available_drives() -> List[Dict[str, Any]]:
     """Return user-meaningful mounted volumes, not every kernel mount.
 
     On Linux ``/proc/mounts`` contains pseudo filesystems, bind mounts, sandbox
-    mounts and application mounts.  Those are not disks and must not inflate the
-    UI's drive count.  Physical/local volumes are deduplicated by ``st_dev`` so
+    mounts and application mounts. Those are not disks and must not inflate the
+    UI's drive count. Physical/local volumes are deduplicated by ``st_dev`` so
     one filesystem exposed at several mount points is shown once.
     """
     drives: List[Dict[str, Any]] = []
@@ -97,18 +97,30 @@ def _decode_mount_field(value: str) -> str:
 
 def _is_user_volume_source(device: str, fs_type: str, mount_point: str) -> bool:
     """Return whether a mount represents a selectable storage volume."""
-    # Real Linux block devices, including LUKS/LVM/device-mapper volumes.
-    if device.startswith("/dev/"):
-        return True
+    del mount_point  # kept in the signature for future policy decisions
 
-    # Common network-volume sources.  They are legitimate selectable volumes,
-    # but remain classified separately from local fixed disks.
+    # Remote storage volumes are legitimate selectable roots.
     if device.startswith("//") or fs_type in {"cifs", "smb3", "nfs", "nfs4"}:
         return True
 
-    # Everything else in /proc/mounts (proc, sysfs, tmpfs, overlay, portal,
-    # squashfs, gvfs, Flatpak/Snap helper mounts, etc.) is not a physical disk.
-    return False
+    if not device.startswith("/dev/"):
+        return False
+
+    # /dev/loop* are typically Snap/AppImage/squashfs images. They are block
+    # devices, but they are not user disks and were the source of the UI showing
+    # 19-20 "fixed disks" on a machine with one mounted NVMe root volume.
+    basename = os.path.basename(device)
+    if basename.startswith(("loop", "zram", "ram", "fd")):
+        return False
+
+    # squashfs/iso helper mounts are application/media images, not writable
+    # storage volumes to scan as part of the user's corpus.
+    if fs_type in {"squashfs", "iso9660", "udf"}:
+        return False
+
+    # Real Linux storage devices and device-mapper/LVM/LUKS volumes remain
+    # eligible: nvme*, sd*, vd*, xvd*, mmcblk*, md*, dm-* and /dev/mapper/*.
+    return True
 
 
 def _get_unix_drives() -> List[Dict[str, Any]]:
@@ -150,8 +162,8 @@ def _get_unix_drives() -> List[Dict[str, Any]]:
             seen_remote.add(remote_key)
             drive_type = "remote"
         else:
-            # st_dev identifies the mounted filesystem.  Bind mounts and other
-            # aliases of the same filesystem must not appear as extra disks.
+            # st_dev identifies the mounted filesystem. Bind mounts and aliases
+            # of the same filesystem must not appear as extra disks.
             device_id = int(stat_result.st_dev)
             if device_id in seen_local_devices:
                 continue
@@ -247,14 +259,8 @@ def validate_scan_path(path: str) -> Dict[str, Any]:
             result["errors"].append(f"Path not readable/traversable: {path}")
             return result
 
-        # Scanning is read-only.  Lack of write permission on the source volume
-        # is not a limitation because the SQLite DB lives elsewhere.
         result["writable"] = os.access(path, os.W_OK)
         result["valid"] = True
-
-        # A 10-directory sample produced spectacularly wrong estimates on real
-        # Linux roots (e.g. ~2,028 vs >1.5M files).  Until a bounded estimator is
-        # statistically defensible, report no estimate rather than false data.
         result["estimated_files"] = 0
     except Exception as exc:
         result["errors"].append(f"Path validation error: {exc}")
