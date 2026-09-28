@@ -6,9 +6,9 @@ A single implementation serves every launch profile::
     python -m src.launcher --profile smart
     python -m src.launcher --profile full
 
-All profiles run ``src/ui/canonical_app.py``.  That entrypoint keeps the mature
-application surface while routing Scanner through the production-safe canonical
-scan lifecycle.
+All profiles run ``src/ui/app.py`` (the canonical Streamlit app); they only
+differ through profile defaults and capability exposure.  The Scanner page is a
+thin client of the production ``ScanService`` lifecycle.
 
 Usage notes
 -----------
@@ -44,7 +44,7 @@ from src.core.launch_profile import (  # noqa: E402
     resolve_profile,
 )
 
-CANONICAL_APP = Path("src") / "ui" / "canonical_app.py"
+CANONICAL_APP = Path("src") / "ui" / "app.py"
 _PORT_SCAN_LIMIT = 100
 
 
