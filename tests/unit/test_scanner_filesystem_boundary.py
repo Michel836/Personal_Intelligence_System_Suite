@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from src.scanner.fast_engine import FastScannerEngine
 
 
@@ -8,7 +10,9 @@ def test_fast_scan_does_not_cross_filesystem_boundary(monkeypatch):
     scanner = FastScannerEngine()
     root = Path("/scan")
 
-    def fake_walk(_root):
+    def fake_walk(_root, onerror=None, followlinks=False):
+        assert followlinks is False
+        assert callable(onerror)
         yield "/scan", ["local", "foreign"], ["root.txt"]
         yield "/scan/local", [], ["local.txt"]
         yield "/scan/foreign", ["nested"], ["foreign.txt"]
@@ -39,7 +43,8 @@ def test_fast_scan_refuses_root_when_filesystem_identity_is_unavailable(monkeypa
     scanner = FastScannerEngine()
     monkeypatch.setattr(scanner, "_filesystem_device", lambda _path: None)
 
-    assert list(scanner.fast_scan(Path("/missing"))) == []
+    with pytest.raises(OSError, match="Cannot determine filesystem"):
+        list(scanner.fast_scan(Path("/missing")))
     assert scanner.is_running is False
 
 
