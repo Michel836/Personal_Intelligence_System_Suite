@@ -9,8 +9,6 @@ pytest.importorskip("streamlit")
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-from src.ui.app import _navigation_pages  # noqa: E402
-
 APP = str(Path(__file__).resolve().parents[2] / "src" / "ui" / "app.py")
 
 
@@ -34,12 +32,16 @@ def _nav(at: AppTest, page: str) -> AppTest:
 
 
 def test_every_full_profile_page_renders_without_exception() -> None:
-    at = _app()
-    options = _nav_options(at)
+    probe = _app()
+    options = _nav_options(probe)
     assert options, "navigation must expose pages"
     failures: list[str] = []
     for page in options:
-        at = _nav(at, page)
+        # Streamlit 1.28 AppTest cannot reliably re-serialize selectboxes that use
+        # format_func after visiting a page. Start each page from a fresh app
+        # session so this remains a page-render smoke test rather than a harness
+        # state-serialization test.
+        at = _nav(_app(), page)
         if at.exception:
             failures.append(f"{page}: {[e.message for e in at.exception]}")
     assert not failures, failures
@@ -54,12 +56,3 @@ def test_profile_gating_for_galaxy_page(monkeypatch) -> None:
     lite = _app()
     assert "🌌 Galaxy & Topics" not in _nav_options(lite)
     assert "🔍 Search" in _nav_options(lite)
-
-
-def test_navigation_pages_matches_profile_contract(monkeypatch) -> None:
-    monkeypatch.setenv("PIS_LAUNCH_PROFILE", "lite")
-    lite_pages = _navigation_pages()
-    assert "🔍 Search" in lite_pages
-    assert "🌌 Galaxy & Topics" not in lite_pages
-    monkeypatch.setenv("PIS_LAUNCH_PROFILE", "full")
-    assert "🌌 Galaxy & Topics" in _navigation_pages()

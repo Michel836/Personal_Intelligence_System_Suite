@@ -1,4 +1,4 @@
-"""Unified launcher for the canonical 36TB Intelligence app (M012-B2).
+"""Unified launcher for the canonical PISS application.
 
 A single implementation serves every launch profile::
 
@@ -7,8 +7,8 @@ A single implementation serves every launch profile::
     python -m src.launcher --profile full
 
 All profiles run ``src/ui/app.py`` (the canonical Streamlit app); they only
-differ through profile defaults and capability exposure.  The historical
-``launchers/*.py`` scripts are thin compatibility wrappers around this module.
+differ through profile defaults and capability exposure.  The Scanner page is a
+thin client of the production ``ScanService`` lifecycle.
 
 Usage notes
 -----------
@@ -32,8 +32,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Make ``import src...`` work whether this module is executed as
-# ``python -m src.launcher`` or ``python src/launcher.py``.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -102,10 +100,6 @@ class LaunchPlan:
         }
 
 
-# ---------------------------------------------------------------------------
-# Port handling
-# ---------------------------------------------------------------------------
-
 def port_available(host: str, port: int) -> bool:
     """Whether *port* can be bound on *host* right now."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -118,10 +112,7 @@ def port_available(host: str, port: int) -> bool:
 
 
 def find_free_port(host: str, preferred: int, *, limit: int = _PORT_SCAN_LIMIT) -> int:
-    """Return the first free port at/after *preferred*.
-
-    Raises :class:`RuntimeError` if no port is free within ``limit`` attempts.
-    """
+    """Return the first free port at/after *preferred*."""
     for candidate in range(preferred, preferred + max(1, limit)):
         if port_available(host, candidate):
             return candidate
@@ -130,22 +121,13 @@ def find_free_port(host: str, preferred: int, *, limit: int = _PORT_SCAN_LIMIT) 
     )
 
 
-# ---------------------------------------------------------------------------
-# Plan construction
-# ---------------------------------------------------------------------------
-
 def build_child_env(
     profile: LaunchProfile,
     *,
     port: int,
     base_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Build the app environment: profile defaults + explicit overrides.
-
-    Profile defaults are applied with ``setdefault`` semantics, so any value the
-    operator already set (API keys, AI mode, embedding backend, OCR, ...) is
-    preserved verbatim.
-    """
+    """Build the app environment: profile defaults + explicit overrides."""
     env: dict[str, str] = dict(os.environ if base_env is None else base_env)
     apply_profile_defaults(profile, env)
     env["PIS_LAUNCH_PROFILE"] = profile.value
@@ -164,12 +146,7 @@ def build_plan(
     extra_streamlit_args: Sequence[str] | None = None,
     base_env: Mapping[str, str] | None = None,
 ) -> LaunchPlan:
-    """Resolve a :class:`LaunchPlan` without launching anything.
-
-    An explicit ``port`` (argument or ``PIS_PORT``) is validated but never
-    silently relocated; otherwise the profile's preferred port is used if free
-    and the next free port is chosen on conflict.
-    """
+    """Resolve a :class:`LaunchPlan` without launching anything."""
     env = dict(os.environ if base_env is None else base_env)
     resolved = parse_profile(profile, strict=True) if profile is not None else parse_profile(
         env.get("PIS_LAUNCH_PROFILE"), strict=False
@@ -220,14 +197,10 @@ def launch(plan: LaunchPlan) -> int:
         return 130
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.launcher",
-        description="Launch the canonical 36TB Intelligence app with a profile.",
+        description="Launch the canonical PISS application with a profile.",
     )
     parser.add_argument(
         "profile",
@@ -281,10 +254,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
-    # Unknown options are forwarded verbatim to `streamlit run`.  Everything
-    # after an explicit ``--`` is passed through unchanged; otherwise
-    # parse_known_args collects stray options while still allowing `--flag`
-    # after an optional positional profile (argparse.REMAINDER would swallow it).
     raw = list(argv) if argv is not None else sys.argv[1:]
     after_separator: list[str] = []
     if "--" in raw:
@@ -326,12 +295,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     single = args.single_instance or os.environ.get("PIS_SINGLE_INSTANCE") == "1"
     if single:
-        # PID lock with stale-lock recovery: a crashed owner never blocks forever.
         from src.ops.instance import InstanceError, InstanceLock, detect_instances
+
         duplicates = detect_instances()
         if len(duplicates) > 1:
             sys.stderr.write(
-                f"warning: {len(duplicates)} Streamlit app instances already detected\n")
+                f"warning: {len(duplicates)} Streamlit app instances already detected\n"
+            )
         lock = InstanceLock("ui", port=plan.port)
         try:
             lock.acquire()

@@ -22,7 +22,8 @@ from src.core.launch_profile import (
     capabilities_for,
     current_profile,
 )
-from src.core.scan_service import ScanService
+from src.core.scan_estimator import estimate_files
+from src.core.scan_service import ScanRequest, ScanService
 from src.scanner.fast_engine import FastScannerEngine
 from src.scanner.models import FileType, Priority
 from src.analytics.dashboard import AnalyticsDashboard
@@ -36,6 +37,7 @@ from src.cloud.sync_manager import CloudSyncManager
 # Import disk selection components
 from src.ui.disk_selector import DiskSelector
 from src.ui.scan_controls import ScanController
+from src.ui.scan_progress import RateTracker, format_duration, progress_view
 from src.ui.activity_monitor import render_activity_monitor
 from src.ui.interactive_table import InteractiveTable
 from src.utils.disk_utils import get_available_drives, get_recommended_drives
@@ -2350,400 +2352,414 @@ def dashboard_page():
         st.info("🔄 Try refreshing the page or ensure your database is accessible")
 
 
-def background_scan_worker(paths, max_files, file_limit_mb, include_system, progress_queue):
-    """Background worker function for scanning files."""
+# ---------------------------------------------------------------------------
+# Scanner page (canonical ScanService lifecycle)
+# ---------------------------------------------------------------------------
+# This page is deliberately a thin client of the production ``ScanService``.
+# It never materialises a full traversal in RAM, never applies a post-scan
+# filter that could hide an indexed file, never re-implements the scan
+# lifecycle, and never advertises pause/thread controls the engine cannot
+# honestly honour.  ``ScanService`` owns begin/record/complete/cancel/fail and
+# only reconciles after a complete, error-free traversal.
+
+
+def _scanner_state() -> None:
+    """Initialise the session keys owned by the canonical scanner page."""
+    defaults = {
+        "scan_thread": None,
+        "scan_cancel_event": None,
+        "progress_queue": None,
+        "scan_status": "idle",
+        "scan_update": {},
+        "scan_history": [],
+        "scan_rate": RateTracker(),
+        "scan_last_sample": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def _scan_worker(db, paths, cancel_event, update_queue):
+    """Run every selected root through ``ScanService.run`` sequentially.
+
+    The worker owns no lifecycle rules: ``ScanService`` decides COMPLETED,
+    CANCELLED and FAILED, and reconciliation only happens for a complete,
+    exhaustively traversed root.  A bounded, read-only estimator runs alongside
+    each root purely to feed the display bar; the scan never waits for it.
+    """
+    service = ScanService(db)
+    emitted_terminal = False
     try:
-        # Import here to avoid issues with Streamlit session state in threads
-        from src.scanner.fast_engine import FastScannerEngine
-        from src.core.database import DatabaseManager
-        from src.core.scan_service import ScanService
-        from src.utils.disk_utils import validate_scan_path
-        import time
-        from datetime import datetime
-        
-        # Create new instances for the thread (can't share session state across threads)
-        scanner = FastScannerEngine()
-        db = DatabaseManager()
-        service = ScanService(db)
-        
-        total_files_scanned = 0
-        total_estimated_files = sum(validation['estimated_files'] for validation in 
-                                   [validate_scan_path(path) for path in paths] 
-                                   if validation.get('estimated_files', 0) > 0) or 1
-        
-        # Global progress callback that works across all paths
-        def progress_callback(scan_progress):
-            """Real-time progress callback for scanner engine."""
-            try:
-                fps = scan_progress.files_per_second if hasattr(scan_progress, 'files_per_second') else 0
-                current_file = scan_progress.current_file if hasattr(scan_progress, 'current_file') else ''
-                scanned_files = scan_progress.scanned_files if hasattr(scan_progress, 'scanned_files') else 0
-                error_files = scan_progress.error_files if hasattr(scan_progress, 'error_files') else 0
-                elapsed_seconds = scan_progress.elapsed_seconds if hasattr(scan_progress, 'elapsed_seconds') else 0
-                start_time = scan_progress.start_time if hasattr(scan_progress, 'start_time') else datetime.now()
-                
-                current_total_files = total_files_scanned + scanned_files
-                
-                # Check if we've reached the file limit
-                if max_files and current_total_files >= max_files:
-                    status = 'completed'
-                else:
-                    status = 'running'
-                
-                # Calculate effective total (use max_files if we have a limit)
-                effective_total = min(total_estimated_files, max_files) if max_files else total_estimated_files
-                
-                update_data = {
-                    'status': status,
-                    'progress': min(1.0, current_total_files / max(effective_total or 1, 1)),
-                    'current_file': current_file or '',
-                    'files_processed': current_total_files,
-                    'total_files': effective_total,
-                    'files_per_second': fps,
-                    'start_time': start_time,
-                    'current_path': current_path if 'current_path' in locals() else '',
-                    'errors': error_files,
-                    'elapsed_time': elapsed_seconds
+        for raw_path in paths:
+            if cancel_event.is_set():
+                break
+            path = Path(raw_path).expanduser().resolve()
+            started = time.monotonic()
+
+            estimate_stop = threading.Event()
+            estimate_lock = threading.Lock()
+            estimate_state = {
+                "available": False,
+                "complete": False,
+                "estimated_files": None,
+            }
+
+            def estimate_worker(
+                _path=path,
+                _stop=estimate_stop,
+                _lock=estimate_lock,
+                _state=estimate_state,
+            ):
+                estimate = estimate_files(
+                    _path, cancel_event=cancel_event, stop_event=_stop
+                )
+                with _lock:
+                    _state["available"] = estimate.available
+                    _state["complete"] = estimate.complete
+                    _state["estimated_files"] = (
+                        estimate.estimated_files if estimate.available else None
+                    )
+
+            estimator = threading.Thread(
+                target=estimate_worker,
+                name="pis-ui-scan-estimator",
+                daemon=True,
+            )
+            estimator.start()
+
+            update_queue.put(
+                {
+                    "status": "running",
+                    "path": str(path),
+                    "files_seen": 0,
+                    "files_upserted": 0,
+                    "files_errors": 0,
+                    "elapsed_s": 0.0,
+                    "files_per_second": 0.0,
+                    "estimated_files": None,
+                    "estimate_available": False,
+                    "estimate_complete": False,
+                    "message": "Scan started",
                 }
-                
-                # Force put with timeout to avoid blocking
-                try:
-                    progress_queue.put(update_data, timeout=0.1)
-                except:
-                    # If queue is full, clear it and try again
-                    try:
-                        while not progress_queue.empty():
-                            progress_queue.get_nowait()
-                        progress_queue.put(update_data, timeout=0.1)
-                    except:
-                        pass
-                        
-            except Exception as e:
-                # Silent error handling in callback to prevent crash
-                pass
-        
-        for path in paths:
-            current_path = str(path)  # Make path available to callback
-            files_per_drive = max_files
-            file_size_limit = file_limit_mb * 1024 * 1024 if file_limit_mb > 0 else None
-            
-            # Scan files through the canonical lifecycle.
-            session = service.session(path)
-            try:
-                files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
+            )
 
-                # Apply file size filter
-                filtered_files = []
-                for file_info in files:
-                    if file_size_limit and file_info.size_bytes > file_size_limit:
-                        continue
-                    filtered_files.append(file_info)
+            def progress_callback(
+                result,
+                _started=started,
+                _lock=estimate_lock,
+                _state=estimate_state,
+            ):
+                elapsed = max(time.monotonic() - _started, 1e-9)
+                with _lock:
+                    estimated = _state["estimated_files"]
+                    available = _state["available"]
+                    complete = _state["complete"]
+                update_queue.put(
+                    {
+                        "status": "running",
+                        "path": result.root_path,
+                        "run_id": result.run_id,
+                        "files_seen": result.files_seen,
+                        "files_upserted": result.files_upserted,
+                        "files_errors": result.files_errors,
+                        "elapsed_s": elapsed,
+                        "files_per_second": result.files_seen / elapsed,
+                        "estimated_files": estimated,
+                        "estimate_available": available,
+                        "estimate_complete": complete,
+                        "message": "Scanning",
+                    }
+                )
 
-                if filtered_files:
-                    session.record(filtered_files)
-                    total_files_scanned += len(filtered_files)
-                session.complete()
-            except Exception as scan_error:
-                session.fail(str(scan_error))
-                raise
-                
-                # Check if we've reached the global file limit
-                if max_files and total_files_scanned >= max_files:
-                    # Send completion status and break
-                    progress_queue.put({
-                        'status': 'completed',
-                        'progress': 1.0,
-                        'files_processed': total_files_scanned,
-                        'total_files': max_files,  # Use max_files as the effective total
-                        'current_path': current_path,
-                        'path_completed': True
-                    })
-                    break
-                
-                # Send update after each path is processed
-                progress_queue.put({
-                    'status': 'running',
-                    'progress': min(1.0, total_files_scanned / max(total_estimated_files or 1, 1)),
-                    'files_processed': total_files_scanned,
-                    'total_files': total_estimated_files,
-                    'current_path': current_path,
-                    'path_completed': True
-                })
-        
-        # Mark scan as completed
-        progress_queue.put({
-            'status': 'completed',
-            'files_processed': total_files_scanned,
-            'total_files': total_estimated_files,
-            'progress': 1.0
-        })
-        
-    except Exception as e:
-        import traceback
-        progress_queue.put({
-            'status': 'error',
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        })
+            result = service.run(
+                ScanRequest(root=path, limit=None, batch_size=1000),
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
+            )
+            estimate_stop.set()
+            estimator.join(timeout=0.5)
+
+            elapsed = max(time.monotonic() - started, 1e-9)
+            with estimate_lock:
+                estimated = estimate_state["estimated_files"]
+                available = estimate_state["available"]
+                complete = estimate_state["complete"]
+            update_queue.put(
+                {
+                    "status": result.status.lower(),
+                    "path": result.root_path,
+                    "run_id": result.run_id,
+                    "files_seen": result.files_seen,
+                    "files_upserted": result.files_upserted,
+                    "files_errors": result.files_errors,
+                    "renamed": result.renamed,
+                    "missing": result.missing,
+                    "elapsed_s": elapsed,
+                    "files_per_second": result.files_seen / elapsed,
+                    "estimated_files": estimated,
+                    "estimate_available": available,
+                    "estimate_complete": complete,
+                    "error": result.error,
+                    "message": result.error or result.status,
+                }
+            )
+            emitted_terminal = True
+
+            # Only a complete traversal is a valid reconciliation scope.  A
+            # cancelled or failed root leaves the remaining roots untouched.
+            if result.status != "COMPLETED":
+                break
+
+        if not emitted_terminal and cancel_event.is_set():
+            update_queue.put(
+                {
+                    "status": "cancelled",
+                    "message": "Scan annulé avant tout parcours.",
+                }
+            )
+    except Exception as exc:  # defensive UI boundary; ScanService already fails closed
+        update_queue.put(
+            {
+                "status": "failed",
+                "message": f"{type(exc).__name__}: {exc}",
+                "error": str(exc),
+            }
+        )
+
+
+def _scanner_drain_updates() -> None:
+    """Move worker telemetry into session state without inventing progress."""
+    queue_obj = st.session_state.get("progress_queue")
+    if queue_obj is None:
+        return
+    while True:
+        try:
+            update = queue_obj.get_nowait()
+        except queue.Empty:
+            break
+        st.session_state.scan_update = update
+        status = str(update.get("status", "running"))
+        st.session_state.scan_status = status
+        if status in {"completed", "failed", "cancelled"}:
+            st.session_state.scan_history.append(update)
+
+
+def _render_scanner_progress() -> None:
+    """Render estimated progress plus the real counters from ScanService.
+
+    The bar is presentation only: it is capped at 99 % until the service really
+    returns COMPLETED, and it never decides the lifecycle.
+    """
+    update = st.session_state.get("scan_update") or {}
+    status = st.session_state.get("scan_status", "idle")
+
+    st.markdown("### 🎛️ État du scan")
+    if status == "idle":
+        st.info("Prêt. Aucun scan en cours.")
+        return
+
+    seen = int(update.get("files_seen", 0) or 0)
+    upserted = int(update.get("files_upserted", 0) or 0)
+    errors = int(update.get("files_errors", 0) or 0)
+    elapsed = float(update.get("elapsed_s", 0.0) or 0.0)
+    fps = float(update.get("files_per_second", 0.0) or 0.0)
+    raw_estimate = update.get("estimated_files")
+    estimated = int(raw_estimate) if raw_estimate else None
+
+    tracker = st.session_state.get("scan_rate")
+    if not isinstance(tracker, RateTracker):
+        tracker = RateTracker()
+        st.session_state.scan_rate = tracker
+
+    if status == "running":
+        sample = (round(elapsed, 3), seen)
+        if st.session_state.get("scan_last_sample") != sample:
+            tracker.add(elapsed, seen)
+            st.session_state.scan_last_sample = sample
+
+    eta_seconds = None
+    eta_stable = False
+    if status == "running" and estimated:
+        eta_seconds = tracker.eta_seconds(max(0, estimated - seen))
+        eta_stable = eta_seconds is not None
+    view = progress_view(
+        status,
+        seen,
+        estimated,
+        eta_seconds=eta_seconds,
+        eta_stable=eta_stable,
+    )
+
+    if view.fraction is None:
+        if status == "running":
+            st.info("Progression en cours — estimation indisponible.")
+    else:
+        if status == "completed":
+            bar_label = f"Terminé : {view.percent_label}"
+        else:
+            bar_label = f"Progression estimée : {view.percent_label}"
+        st.progress(min(max(view.fraction, 0.0), 1.0), text=bar_label)
+        if status == "running" and estimated and not update.get(
+            "estimate_complete", True
+        ):
+            st.caption(
+                "Estimation partielle : le plafond d'analyse du pré-scan a été "
+                "atteint, la progression reste indicative."
+            )
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Statut", status.upper())
+    col2.metric("Fichiers vus", f"{seen:,}")
+    col3.metric("Écrits / actualisés", f"{upserted:,}")
+    col4.metric("Erreurs", f"{errors:,}")
+    st.caption(f"Chemin courant : {update.get('path', '—') or '—'}")
+    timing = f"Débit : {fps:,.0f} fichiers/s · Temps : {format_duration(elapsed)}"
+    if status == "running" and view.eta_seconds is not None:
+        timing += f" · ETA : ~{format_duration(view.eta_seconds)}"
+    elif status == "running" and estimated and view.fraction is not None:
+        timing += " · ETA : estimation en cours"
+    st.caption(timing)
+
+    if status == "running":
+        st.info(
+            "Progression estimée à partir d'un pré-scan borné, affichée à titre "
+            "indicatif : seuls les compteurs réels font foi."
+        )
+    elif status == "completed":
+        st.success(
+            "Scan terminé et réconcilié. "
+            f"Renommés : {int(update.get('renamed', 0) or 0):,} · "
+            f"Manquants : {int(update.get('missing', 0) or 0):,}."
+        )
+    elif status == "cancelled":
+        st.warning(
+            "Scan annulé. La barre est arrêtée et aucune réconciliation "
+            "destructive n'a été effectuée."
+        )
+    elif status == "failed":
+        st.error(
+            "Scan échoué en mode fail-closed. La barre est arrêtée et aucune "
+            f"réconciliation destructive n'a été effectuée. {update.get('message', '')}"
+        )
+
+
+def _scanner_progress_fragment() -> None:
+    """Auto-refreshing progress panel (display only)."""
+    _scanner_drain_updates()
+    _render_scanner_progress()
+    status = st.session_state.get("scan_status")
+    thread = st.session_state.get("scan_thread")
+    alive = bool(thread is not None and thread.is_alive())
+    if status in {"completed", "failed", "cancelled"} and not alive:
+        st.rerun(scope="app")
+
+
+if hasattr(st, "fragment"):
+    try:
+        _scanner_progress_fragment = st.fragment(run_every=1.5)(
+            _scanner_progress_fragment
+        )
+    except TypeError:  # pragma: no cover - very old Streamlit without run_every
+        pass
+
 
 def scanner_page():
-    """Advanced scanner control page with disk selection."""
-    st.header("🚀 Advanced Scanner Control")
-    
-    # Disk selection interface
+    """Production scanner page driven by the canonical ``ScanService``."""
+    _scanner_state()
+    _scanner_drain_updates()
+
+    st.header("🚀 Scanner")
+    st.caption(
+        "Scanner de production · streaming borné · lifecycle canonique · "
+        "réconciliation uniquement après un parcours complet"
+    )
+
     disk_selector = st.session_state.disk_selector
-    selected_paths = disk_selector.render_disk_selection(key_prefix="simple_scanner")
-    
+    selected_paths = disk_selector.render_disk_selection(key_prefix="canonical_scanner")
+
     if not selected_paths:
         st.warning("⚠️ Veuillez sélectionner des disques ou chemins à scanner.")
+        _scanner_drain_updates()
+        _render_scanner_progress()
         return
-    
-    # Scan configuration
-    st.markdown("### ⚙️ Configuration du Scan")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        max_files = st.number_input(
-            "🔢 Fichiers max par disque:",
-            min_value=0,
-            max_value=1000000,
-            value=100000,
-            step=5000,
-            help="Nombre maximum de fichiers à scanner par disque (0 = illimité)"
-        )
-    
-    with col2:
-        file_limit_mb = st.number_input(
-            "📏 Taille max fichier (MB):",
-            min_value=0,
-            max_value=10000,
-            value=500,
-            help="Taille maximum des fichiers (0 = illimité)"
-        )
-    
-    with col3:
-        threads = st.selectbox(
-            "⚡ Threads:",
-            [1, 2, 4, 6, 8, 12],
-            index=2,
-            help="Nombre de threads pour le scan parallèle"
-        )
-    
-    # Advanced scan controls
-    st.markdown("---")
-    scan_controller = st.session_state.scan_controller
-    
-    # Render scan controls with progress tracking
-    scan_action = scan_controller.render_scan_controls(
-        scanner_engine=st.session_state.scanner,
-        key_prefix="simple_scanner"
+
+    st.markdown("### ⚙️ Politique de scan")
+    st.info(
+        "Aucune limite artificielle de fichiers et aucun filtre de taille "
+        "post-scan : l'index enregistré correspond exactement à ce qui a été "
+        "parcouru. Un arrêt annule la réconciliation."
     )
-    
-    # Handle scan control actions
-    if scan_action == "pause":
-        st.session_state.scanner.pause()
-        scan_controller.set_status('paused')
-        st.toast("⏸️ Scan mis en pause", icon="⏸️")
-    
-    elif scan_action == "resume":
-        st.session_state.scanner.resume()
-        scan_controller.set_status('running')
-        st.toast("▶️ Scan repris", icon="▶️")
-    
-    elif scan_action == "stop":
-        st.session_state.scanner.cancel()
-        scan_controller.set_status('cancelled')
-        st.session_state.scan_running = False
-        st.toast("⏹️ Scan arrêté", icon="⏹️")
-    
-    elif scan_action == "reset":
-        scan_controller.reset_progress()
-        st.toast("🔄 Progression réinitialisée", icon="🔄")
-    
-    st.markdown("---")
-    
-    # Start scan button
-    col1, col2 = st.columns([2, 1])
-    
+    st.write(f"**Racines sélectionnées :** {len(selected_paths)}")
+    for path in selected_paths:
+        st.caption(f"• {path}")
+
+    thread = st.session_state.get("scan_thread")
+    running = bool(thread is not None and thread.is_alive())
+
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
     with col1:
-        scan_disabled = scan_controller.get_status() in ['running', 'paused']
-        if st.button("🚀 Lancer le Scan Avancé", type="primary", use_container_width=True, disabled=scan_disabled):
-            st.session_state.scan_running = True
-            _start_advanced_scan_realtime(selected_paths, max_files, file_limit_mb, threads)
-    
+        if st.button(
+            "🚀 Lancer le scan complet",
+            type="primary",
+            use_container_width=True,
+            disabled=running,
+        ):
+            update_queue: queue.Queue = queue.Queue()
+            cancel_event = threading.Event()
+            worker = threading.Thread(
+                target=_scan_worker,
+                args=(st.session_state.db, selected_paths, cancel_event, update_queue),
+                name="pis-ui-scan",
+                daemon=True,
+            )
+            st.session_state.progress_queue = update_queue
+            st.session_state.scan_cancel_event = cancel_event
+            st.session_state.scan_thread = worker
+            st.session_state.scan_status = "running"
+            st.session_state.scan_rate = RateTracker()
+            st.session_state.scan_last_sample = None
+            st.session_state.scan_update = {
+                "status": "running",
+                "path": selected_paths[0],
+                "files_seen": 0,
+                "files_upserted": 0,
+                "files_errors": 0,
+                "message": "Starting",
+            }
+            worker.start()
+            st.rerun()
+
     with col2:
-        if st.button("📊 Voir les Statistiques", use_container_width=True):
-            # Navigate to statistics in the current app instead of switching pages
+        if st.button("⏹️ Arrêter", use_container_width=True, disabled=not running):
+            cancel_event = st.session_state.get("scan_cancel_event")
+            if cancel_event is not None:
+                cancel_event.set()
+            st.info("Demande d'arrêt envoyée ; la réconciliation sera annulée.")
+
+    with col3:
+        if st.button("🔄 Actualiser", use_container_width=True):
+            st.rerun()
+
+    with col4:
+        if st.button(
+            "📊 Voir les Statistiques",
+            use_container_width=True,
+            disabled=running,
+        ):
             st.session_state.redirect_to_stats = True
             st.rerun()
 
+    if running or st.session_state.get("scan_status") == "running":
+        _scanner_progress_fragment()
+    else:
+        _scanner_drain_updates()
+        _render_scanner_progress()
 
-def _start_advanced_scan_realtime(paths, max_files, file_limit_mb, threads):
-    """Start advanced scanning with real-time progress display using threading."""
-    
-    if not paths:
-        st.error("❌ Aucun disque sélectionné !")
-        return
-    
-    # Check if a scan is already running
-    if st.session_state.scan_thread and st.session_state.scan_thread.is_alive():
-        st.warning("⚠️ Un scan est déjà en cours !")
-        return
-    
-    # Initialize scan controller
-    scan_controller = st.session_state.scan_controller
-    scan_controller.set_status('running')
-    
-    # Clear previous progress queue
-    while not st.session_state.progress_queue.empty():
-        try:
-            st.session_state.progress_queue.get_nowait()
-        except:
-            break
-    
-    # Start background scan thread
-    st.session_state.scan_thread = threading.Thread(
-        target=background_scan_worker,
-        args=(paths, max_files, file_limit_mb, False, st.session_state.progress_queue),
-        daemon=True
-    )
-    st.session_state.scan_thread.start()
-    
-    # Show immediate feedback
-    st.success("🚀 Scan démarré ! Les métriques se mettent à jour automatiquement toutes les secondes.")
-    st.info("🔴 **LIVE** - Progression en temps réel activée !")
-    
-    # Force page refresh to show updated controls
-    time.sleep(0.5)
-    st.rerun()
-
-def _start_advanced_scan(paths, max_files, file_limit_mb, threads):
-    """Start advanced scanning with progress tracking."""
-    
-    # Get scan controller from session state
-    scan_controller = st.session_state.scan_controller
-    
-    # Set scan controller to running state
-    scan_controller.set_status('running')
-    scan_controller.reset_progress()
-    
-    # Initialize progress tracking with scan controller
-    total_files_scanned = 0
-    total_estimated_files = max(len(paths) * max_files, 1)  # Rough estimate, ensure > 0
-    
-    # Update scan controller with initial data
-    progress_data = {
-        'status': 'running',
-        'progress': 0.0,
-        'current_file': '',
-        'files_processed': 0,
-        'total_files': total_estimated_files,
-        'files_per_second': 0.0,
-        'start_time': datetime.now(),
-        'current_path': paths[0] if paths else '',
-        'errors': 0
-    }
-    scan_controller.update_progress(progress_data)
-    
-    try:
-        scanner = st.session_state.scanner
-        st.session_state.scan_running = True
-        
-        for i, path in enumerate(paths):
-            session = None
-            # Update scan controller current path
-            progress_data['current_path'] = str(path)
-            scan_controller.update_progress(progress_data)
-            
-            # Calculate per-drive file limit
-            files_per_drive = max_files
-            file_size_limit = file_limit_mb * 1024 * 1024 if file_limit_mb > 0 else None
-            
-            try:
-                start_time = time.time()
-                
-                # Update scan controller status
-                progress_data['current_file'] = f"Scanning {path}..."
-                scan_controller.update_progress(progress_data)
-                
-                # Use the advanced scanner with progress callback
-                def progress_callback(scan_progress):
-                    """Real-time progress callback for scanner engine."""
-                    # Calculate files per second using scan_progress internal timing
-                    fps = scan_progress.files_per_second
-                    
-                    # Update scan controller progress with real data
-                    update_data = {
-                        'status': 'running',
-                        'progress': min(1.0, (total_files_scanned + scan_progress.scanned_files) / max(total_estimated_files or 1, 1)),
-                        'current_file': scan_progress.current_file or '',
-                        'files_processed': total_files_scanned + scan_progress.scanned_files,
-                        'total_files': total_estimated_files,
-                        'files_per_second': fps,
-                        'start_time': scan_progress.start_time or datetime.now(),
-                        'current_path': str(path),
-                        'errors': scan_progress.error_files,
-                        'elapsed_time': scan_progress.elapsed_seconds
-                    }
-                    scan_controller.update_progress(update_data)
-                
-                # Use scan_paths instead of fast_scan for better progress tracking
-                session = ScanService(st.session_state.db).session(path)
-                files = list(scanner.scan_paths([Path(path)], limit=files_per_drive, progress_callback=progress_callback))
-
-                # Apply file size filter
-                filtered_files = []
-                for file_info in files:
-                    if file_size_limit and file_info.size_bytes > file_size_limit:
-                        continue
-                    filtered_files.append(file_info)
-
-                if filtered_files:
-                    session.record(filtered_files)
-                    total_files_scanned += len(filtered_files)
-                    progress_data['files_processed'] = total_files_scanned
-                    progress_data['progress'] = min(1.0, total_files_scanned / max(total_estimated_files or 1, 1))
-                    scan_controller.update_progress(progress_data)
-                session.complete()
-
-            except Exception as e:
-                # Update error count
-                if session is not None:
-                    session.fail(str(e))
-                progress_data['errors'] = progress_data.get('errors', 0) + 1
-                scan_controller.update_progress(progress_data)
-                st.error(f"Erreur lors du scan de {path}: {str(e)}")
-                continue
-        
-        # Update scan controller to completed status
-        scan_controller.set_status('completed')
-        progress_data['status'] = 'completed'
-        progress_data['progress'] = 1.0
-        progress_data['current_file'] = 'Scan terminé'
-        scan_controller.update_progress(progress_data)
-        
-        st.session_state.scan_running = False
-        
-        if total_files_scanned > 0:
-            st.success(f"""
-            🎉 **Scan Multi-Disques Terminé !**
-            
-            - **📁 Disques scannés**: {len(paths)}
-            - **📄 Fichiers indexés**: {total_files_scanned:,}
-            - **⚡ Performance**: {threads} threads utilisés
-            """)
-        else:
-            st.warning("⚠️ Scan terminé mais aucun nouveau fichier trouvé.")
-        
-    except Exception as e:
-        # Update scan controller to error status
-        scan_controller.set_status('cancelled')
-        progress_data['status'] = 'cancelled'
-        progress_data['current_file'] = f'Erreur: {str(e)}'
-        scan_controller.update_progress(progress_data)
-        st.session_state.scan_running = False
-        st.error(f"❌ Échec du scan multi-disques: {e}")
+    if st.session_state.get("scan_history"):
+        with st.expander("Historique de cette session"):
+            for item in st.session_state.scan_history[-10:]:
+                st.json(item)
 
 
 def statistics_page():

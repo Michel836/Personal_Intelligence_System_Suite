@@ -48,6 +48,13 @@ def _nav(at: AppTest, page: str) -> AppTest:
     return at
 
 
+def _normalize_formatted_selectboxes(at: AppTest) -> None:
+    """Work around Streamlit 1.28 AppTest serializing format_func labels as options."""
+    for selectbox in at.selectbox:
+        if selectbox.label == "Privacy mode" and selectbox.options:
+            selectbox.set_value(selectbox.options[0])
+
+
 def test_reports_page_is_navigable_and_renders(reports_db: Path) -> None:
     assert reports_db.is_dir()
     at = _app()
@@ -65,6 +72,7 @@ def test_create_dossier_through_ui(reports_db: Path) -> None:
     name[0].set_value("UI dossier")
     submit = [b for b in at.button if b.label == "Create dossier"]
     assert submit, [b.label for b in at.button]
+    _normalize_formatted_selectboxes(at)
     submit[0].click()
     at.run()
     assert not at.exception, [e.message for e in at.exception]

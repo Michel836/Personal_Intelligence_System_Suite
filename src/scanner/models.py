@@ -3,7 +3,7 @@
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
 # Size policy. These thresholds are deliberately independent so that metadata
@@ -11,6 +11,29 @@ from enum import Enum
 METADATA_INDEX_LIMIT: Optional[int] = None  # index metadata for any size
 HASH_LIMIT = 50 * 1024 * 1024               # 50 MiB
 EXTRACTION_LIMIT = 50 * 1024 * 1024         # 50 MiB
+
+_SQLITE_INT64_MIN = -(1 << 63)
+_SQLITE_INT64_MAX = (1 << 63) - 1
+_UINT64_MODULUS = 1 << 64
+
+
+def normalize_filesystem_identity(value: Optional[int]) -> Optional[int]:
+    """Map a filesystem identity integer into SQLite's signed int64 domain.
+
+    Linux/FUSE/portal filesystems may expose ``st_dev``/``st_ino`` as unsigned
+    64-bit integers. Python preserves those values, but sqlite3 only accepts
+    signed 64-bit INTEGER parameters. Preserve the full 64-bit bit pattern by
+    converting unsigned values above ``INT64_MAX`` to their two's-complement
+    signed representation. Values already representable by SQLite are unchanged.
+    """
+    if value is None:
+        return None
+    value = int(value)
+    if _SQLITE_INT64_MIN <= value <= _SQLITE_INT64_MAX:
+        return value
+    if _SQLITE_INT64_MAX < value < _UINT64_MODULUS:
+        return value - _UINT64_MODULUS
+    raise ValueError(f"filesystem identity outside 64-bit range: {value}")
 
 
 def stat_created_at(stat_result: Any) -> Optional[datetime]:
@@ -56,6 +79,11 @@ class FileInfo(BaseModel):
     # Filesystem identity (for rename/move association within a volume)
     device_id: Optional[int] = None
     inode: Optional[int] = None
+
+    @field_validator("device_id", "inode", mode="before")
+    @classmethod
+    def _normalize_sqlite_identity(cls, value: Optional[int]) -> Optional[int]:
+        return normalize_filesystem_identity(value)
     
     # File characteristics
     extension: str
@@ -192,6 +220,7 @@ class ScanStats(BaseModel):
         if self.total_files == 0:
             return 0.0
         return (self.duplicate_files / self.total_files) * 100
+    
     
     def get_summary(self) -> str:
         """Get a human-readable summary."""

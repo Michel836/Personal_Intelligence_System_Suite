@@ -6,10 +6,10 @@ One state machine, one persistence contract:
                   |                                     (reconcile)
                   +-- cancel_event -> cancel_scan
                   +-- exception    -> fail_scan
+                  +-- bounded run  -> cancel_scan (never reconcile)
 
 ``ScanService.run`` drives a scanner end-to-end; ``ScanSession`` exposes the
-same lifecycle for callers that already own their scan loop (e.g. the UI's
-multi-drive workers) so they never need to re-implement it.
+same lifecycle for callers that already own their scan loop.
 """
 from __future__ import annotations
 
@@ -33,7 +33,12 @@ _SCAN_SENTINEL = object()
 
 @dataclass
 class ScanRequest:
-    """Inputs for a single scan run."""
+    """Inputs for a single scan run.
+
+    ``limit`` is a diagnostic/bounded traversal only.  Because an unseen path in
+    a bounded traversal cannot be interpreted as deleted, any request with a
+    limit is persisted without reconciliation and ends as ``CANCELLED``.
+    """
 
     root: Path
     limit: Optional[int] = None
@@ -59,18 +64,7 @@ class ScanResult:
 
 
 class ScanSession:
-    """Lifecycle context for a caller-owned scan loop.
-
-    Usage::
-
-        with service.session(root) as session:
-            for batch in batches:
-                session.record(batch)
-            session.complete()
-
-    If the block exits without an explicit terminal call, the run is marked
-    FAILED (never reconciled).
-    """
+    """Lifecycle context for a caller-owned scan loop."""
 
     def __init__(self, db: DatabaseManager, root: Path, volume: Optional[VolumeInfo] = None):
         self.db = db
@@ -121,6 +115,15 @@ class ScanService:
     def session(self, root, *, volume: Optional[VolumeInfo] = None) -> ScanSession:
         return ScanSession(self.db, Path(root), volume=volume)
 
+    def _set_run_error_count(self, run_id: int, count: int) -> None:
+        """Persist scanner error telemetry without changing lifecycle state."""
+        with self.db.get_connection() as conn:
+            conn.execute(
+                "UPDATE scan_runs SET files_errors = ? WHERE id = ?",
+                (int(count), int(run_id)),
+            )
+            conn.commit()
+
     def _iter_files(
         self,
         scanner,
@@ -128,12 +131,10 @@ class ScanService:
         cancel_event: Optional[threading.Event],
         overlap: bool = True,
     ) -> Iterator[FileInfo]:
-        """Yield scanned files, optionally overlapping scan and DB persistence.
+        """Yield scanned files while keeping memory bounded.
 
-        With ``overlap`` the scanner runs in a bounded producer thread while the
-        caller (the single DB writer) consumes, so filesystem traversal is not
-        serialised behind SQLite writes. The queue is bounded, so memory stays
-        constant even for huge trees.
+        Producer exceptions are transported to the consumer and re-raised. A
+        failed traversal must never be mistaken for a clean end-of-stream.
         """
         stream = scanner.scan_paths(
             [request.root],
@@ -150,25 +151,25 @@ class ScanService:
         work: "queue.Queue[object]" = queue.Queue(maxsize=512)
         stop = threading.Event()
 
+        def put_control(item: object) -> None:
+            while True:
+                try:
+                    work.put(item, timeout=0.2)
+                    return
+                except queue.Full:
+                    if stop.is_set():
+                        return
+
         def produce() -> None:
             try:
                 for file_info in stream:
                     if stop.is_set():
                         break
-                    while not stop.is_set():
-                        try:
-                            work.put(file_info, timeout=0.2)
-                            break
-                        except queue.Full:
-                            continue
+                    put_control(file_info)
+            except BaseException as exc:
+                put_control(exc)
             finally:
-                while True:
-                    try:
-                        work.put(_SCAN_SENTINEL, timeout=0.2)
-                        break
-                    except queue.Full:
-                        if stop.is_set():
-                            break
+                put_control(_SCAN_SENTINEL)
 
         producer = threading.Thread(target=produce, name="pis-scan-producer", daemon=True)
         producer.start()
@@ -177,6 +178,8 @@ class ScanService:
                 item = work.get()
                 if item is _SCAN_SENTINEL:
                     break
+                if isinstance(item, BaseException):
+                    raise item
                 if cancel_event is not None and cancel_event.is_set():
                     stop.set()
                     continue
@@ -198,16 +201,32 @@ class ScanService:
         cancel_event: Optional[threading.Event] = None,
         progress_callback: Optional[Callable[[ScanResult], None]] = None,
     ) -> ScanResult:
-        """Scan a single root through the lifecycle and return the outcome."""
+        """Scan a single root through the lifecycle and return the outcome.
+
+        Reconciliation is fail-closed.  Access errors, explicit cancellation and
+        deliberately bounded scans preserve existing ACTIVE rows and never infer
+        deletion from paths that were not exhaustively traversed.
+        """
         scanner = FastScannerEngine()
         try:
             info = self.db.begin_scan(request.root, volume=request.volume)
-        except Exception as exc:  # overlapping run, DB error, ...
+        except Exception as exc:
             logger.error(f"could not start scan for {request.root}: {exc}")
             return ScanResult(
-                run_id=-1, root_path=str(request.root), volume_id=-1,
-                status="FAILED", error=str(exc),
+                run_id=-1,
+                root_path=str(request.root),
+                volume_id=-1,
+                status="FAILED",
+                error=str(exc),
             )
+
+        effective_request = ScanRequest(
+            root=Path(info["root_path"]),
+            limit=request.limit,
+            include_system=request.include_system,
+            batch_size=request.batch_size,
+            volume=request.volume,
+        )
         result = ScanResult(
             run_id=int(info["run_id"]),
             root_path=info["root_path"],
@@ -217,12 +236,17 @@ class ScanService:
         batch: list[FileInfo] = []
         bulk = get_resource_config().bulk_index
         overlap = get_resource_config().scan_overlap
+
         try:
             with self.db.bulk_indexing(bulk):
-                for file_info in self._iter_files(scanner, request, cancel_event, overlap):
+                for file_info in self._iter_files(
+                    scanner, effective_request, cancel_event, overlap
+                ):
                     batch.append(file_info)
-                    if len(batch) >= request.batch_size:
-                        result.files_upserted += self.db.record_scan_files(result.run_id, batch)
+                    if len(batch) >= effective_request.batch_size:
+                        result.files_upserted += self.db.record_scan_files(
+                            result.run_id, batch
+                        )
                         result.files_seen += len(batch)
                         batch = []
                         if progress_callback:
@@ -230,30 +254,73 @@ class ScanService:
 
                 if cancel_event is not None and cancel_event.is_set():
                     if batch:
-                        result.files_upserted += self.db.record_scan_files(result.run_id, batch)
+                        result.files_upserted += self.db.record_scan_files(
+                            result.run_id, batch
+                        )
                         result.files_seen += len(batch)
+                    result.files_errors = int(
+                        getattr(scanner.progress, "error_files", 0) or 0
+                    )
+                    self._set_run_error_count(result.run_id, result.files_errors)
                     self.db.cancel_scan(result.run_id)
                     result.status = "CANCELLED"
+                    result.error = "scan cancelled; reconciliation skipped"
+                    if progress_callback:
+                        progress_callback(result)
                     return result
 
                 if batch:
                     result.files_upserted += self.db.record_scan_files(result.run_id, batch)
                     result.files_seen += len(batch)
+                    if progress_callback:
+                        progress_callback(result)
 
-            # Triggers restored and FTS rebuilt before reconciliation runs.
+            result.files_errors = int(
+                getattr(scanner.progress, "error_files", 0) or 0
+            )
+            self._set_run_error_count(result.run_id, result.files_errors)
+            if result.files_errors:
+                raise RuntimeError(
+                    f"scan incomplete: {result.files_errors} filesystem access errors"
+                )
+
+            if effective_request.limit is not None:
+                self.db.cancel_scan(result.run_id)
+                result.status = "CANCELLED"
+                result.error = (
+                    "bounded scan completed without reconciliation; "
+                    "unseen paths were preserved"
+                )
+                if progress_callback:
+                    progress_callback(result)
+                return result
+
             rec = self.db.complete_scan(result.run_id)
             result.status = "COMPLETED"
             result.renamed = int(rec["renamed"])
             result.missing = int(rec["missing"])
+            if progress_callback:
+                progress_callback(result)
             return result
-        except Exception as exc:  # noqa: BLE001 - surface any scan failure safely
-            logger.exception(f"scan failed for {request.root}: {exc}")
+
+        except Exception as exc:
+            result.files_errors = max(
+                result.files_errors,
+                int(getattr(scanner.progress, "error_files", 0) or 0),
+            )
+            try:
+                self._set_run_error_count(result.run_id, result.files_errors)
+            except Exception:
+                pass
+            logger.exception(f"scan failed for {effective_request.root}: {exc}")
             try:
                 self.db.fail_scan(result.run_id, str(exc))
-            except Exception as fail_exc:  # pragma: no cover - defensive
+            except Exception as fail_exc:
                 logger.error(f"could not mark scan FAILED: {fail_exc}")
             result.status = "FAILED"
             result.error = str(exc)
+            if progress_callback:
+                progress_callback(result)
             return result
 
     def run_turbo(
@@ -268,11 +335,14 @@ class ScanService:
 
         try:
             info = self.db.begin_scan(root, volume=volume)
-        except Exception as exc:  # overlapping run, DB error, ...
+        except Exception as exc:
             logger.error(f"could not start turbo scan for {root}: {exc}")
             return ScanResult(
-                run_id=-1, root_path=str(root), volume_id=-1,
-                status="FAILED", error=str(exc),
+                run_id=-1,
+                root_path=str(root),
+                volume_id=-1,
+                status="FAILED",
+                error=str(exc),
             )
         result = ScanResult(
             run_id=int(info["run_id"]),
@@ -280,8 +350,7 @@ class ScanService:
             volume_id=int(info["volume_id"]),
             status="RUNNING",
         )
-        turbo = TurboScanner()
-        turbo.db = self.db
+        turbo = TurboScanner(db=self.db)
         turbo.set_scan_context(result.volume_id, result.run_id)
         try:
             with self.db.bulk_indexing(get_resource_config().bulk_index):
@@ -290,20 +359,26 @@ class ScanService:
                 self.db.cancel_scan(result.run_id)
                 result.status = "CANCELLED"
                 return result
+            result.files_seen = int(stats.get("files_found", 0))
+            result.files_upserted = int(stats.get("files_processed", 0))
+            result.files_errors = int(stats.get("files_errors", 0))
+            self._set_run_error_count(result.run_id, result.files_errors)
+            if result.files_errors:
+                raise RuntimeError(
+                    f"turbo scan incomplete: {result.files_errors} filesystem errors"
+                )
             rec = self.db.complete_scan(result.run_id)
             result.status = "COMPLETED"
-            result.files_seen = int(stats.get("files_found", 0))
-            result.files_upserted = int(stats.get("files_saved", 0))
             result.renamed = int(rec["renamed"])
             result.missing = int(rec["missing"])
             if progress_callback:
                 progress_callback(result)
             return result
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception(f"turbo scan failed for {root}: {exc}")
             try:
                 self.db.fail_scan(result.run_id, str(exc))
-            except Exception:  # pragma: no cover - defensive
+            except Exception:
                 pass
             result.status = "FAILED"
             result.error = str(exc)
