@@ -105,3 +105,31 @@ def test_no_parallel_scanner_page_architecture() -> None:
     assert not (ui / "canonical_app.py").exists()
     assert not (ui / "safe_scanner_page.py").exists()
     assert not (ui / "scanner_runtime.py").exists()
+
+
+def test_scanner_worker_runs_a_bounded_estimator() -> None:
+    worker = _function_sources("_scan_worker")
+    assert "estimate_files(" in worker
+    assert "estimated_files" in worker
+    assert "estimate_stop" in worker  # estimator stops with its root
+
+
+def test_scanner_status_comes_from_the_scan_result() -> None:
+    worker = _function_sources("_scan_worker")
+    assert '"status": result.status.lower()' in worker
+
+
+def test_scanner_progress_uses_presentation_helpers() -> None:
+    render = _function_sources("_render_scanner_progress")
+    assert "progress_view(" in render
+    assert "Progression estimée :" in render
+    assert "estimation indisponible" in render
+    assert 'status == "completed"' in render
+    assert ".complete()" not in render
+
+
+def test_scanner_progress_auto_refreshes_while_running() -> None:
+    assert "st.fragment(run_every=" in _source()
+    fragment = _function_sources("_scanner_progress_fragment")
+    assert "_scanner_drain_updates()" in fragment
+    assert "_render_scanner_progress()" in fragment

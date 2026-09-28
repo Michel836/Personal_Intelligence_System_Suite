@@ -22,6 +22,7 @@ from src.core.launch_profile import (
     capabilities_for,
     current_profile,
 )
+from src.core.scan_estimator import estimate_files
 from src.core.scan_service import ScanRequest, ScanService
 from src.scanner.fast_engine import FastScannerEngine
 from src.scanner.models import FileType, Priority
@@ -36,6 +37,7 @@ from src.cloud.sync_manager import CloudSyncManager
 # Import disk selection components
 from src.ui.disk_selector import DiskSelector
 from src.ui.scan_controls import ScanController
+from src.ui.scan_progress import RateTracker, format_duration, progress_view
 from src.ui.activity_monitor import render_activity_monitor
 from src.ui.interactive_table import InteractiveTable
 from src.utils.disk_utils import get_available_drives, get_recommended_drives
@@ -2370,6 +2372,8 @@ def _scanner_state() -> None:
         "scan_status": "idle",
         "scan_update": {},
         "scan_history": [],
+        "scan_rate": RateTracker(),
+        "scan_last_sample": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -2381,7 +2385,8 @@ def _scan_worker(db, paths, cancel_event, update_queue):
 
     The worker owns no lifecycle rules: ``ScanService`` decides COMPLETED,
     CANCELLED and FAILED, and reconciliation only happens for a complete,
-    exhaustively traversed root.
+    exhaustively traversed root.  A bounded, read-only estimator runs alongside
+    each root purely to feed the display bar; the scan never waits for it.
     """
     service = ScanService(db)
     emitted_terminal = False
@@ -2392,6 +2397,37 @@ def _scan_worker(db, paths, cancel_event, update_queue):
             path = Path(raw_path).expanduser().resolve()
             started = time.monotonic()
 
+            estimate_stop = threading.Event()
+            estimate_lock = threading.Lock()
+            estimate_state = {
+                "available": False,
+                "complete": False,
+                "estimated_files": None,
+            }
+
+            def estimate_worker(
+                _path=path,
+                _stop=estimate_stop,
+                _lock=estimate_lock,
+                _state=estimate_state,
+            ):
+                estimate = estimate_files(
+                    _path, cancel_event=cancel_event, stop_event=_stop
+                )
+                with _lock:
+                    _state["available"] = estimate.available
+                    _state["complete"] = estimate.complete
+                    _state["estimated_files"] = (
+                        estimate.estimated_files if estimate.available else None
+                    )
+
+            estimator = threading.Thread(
+                target=estimate_worker,
+                name="pis-ui-scan-estimator",
+                daemon=True,
+            )
+            estimator.start()
+
             update_queue.put(
                 {
                     "status": "running",
@@ -2401,12 +2437,24 @@ def _scan_worker(db, paths, cancel_event, update_queue):
                     "files_errors": 0,
                     "elapsed_s": 0.0,
                     "files_per_second": 0.0,
+                    "estimated_files": None,
+                    "estimate_available": False,
+                    "estimate_complete": False,
                     "message": "Scan started",
                 }
             )
 
-            def progress_callback(result, _started=started):
+            def progress_callback(
+                result,
+                _started=started,
+                _lock=estimate_lock,
+                _state=estimate_state,
+            ):
                 elapsed = max(time.monotonic() - _started, 1e-9)
+                with _lock:
+                    estimated = _state["estimated_files"]
+                    available = _state["available"]
+                    complete = _state["complete"]
                 update_queue.put(
                     {
                         "status": "running",
@@ -2417,6 +2465,9 @@ def _scan_worker(db, paths, cancel_event, update_queue):
                         "files_errors": result.files_errors,
                         "elapsed_s": elapsed,
                         "files_per_second": result.files_seen / elapsed,
+                        "estimated_files": estimated,
+                        "estimate_available": available,
+                        "estimate_complete": complete,
                         "message": "Scanning",
                     }
                 )
@@ -2426,8 +2477,14 @@ def _scan_worker(db, paths, cancel_event, update_queue):
                 cancel_event=cancel_event,
                 progress_callback=progress_callback,
             )
+            estimate_stop.set()
+            estimator.join(timeout=0.5)
 
             elapsed = max(time.monotonic() - started, 1e-9)
+            with estimate_lock:
+                estimated = estimate_state["estimated_files"]
+                available = estimate_state["available"]
+                complete = estimate_state["complete"]
             update_queue.put(
                 {
                     "status": result.status.lower(),
@@ -2440,6 +2497,9 @@ def _scan_worker(db, paths, cancel_event, update_queue):
                     "missing": result.missing,
                     "elapsed_s": elapsed,
                     "files_per_second": result.files_seen / elapsed,
+                    "estimated_files": estimated,
+                    "estimate_available": available,
+                    "estimate_complete": complete,
                     "error": result.error,
                     "message": result.error or result.status,
                 }
@@ -2486,7 +2546,11 @@ def _scanner_drain_updates() -> None:
 
 
 def _render_scanner_progress() -> None:
-    """Render real counters from ScanService callbacks (no fake percentage)."""
+    """Render estimated progress plus the real counters from ScanService.
+
+    The bar is presentation only: it is capped at 99 % until the service really
+    returns COMPLETED, and it never decides the lifecycle.
+    """
     update = st.session_state.get("scan_update") or {}
     status = st.session_state.get("scan_status", "idle")
 
@@ -2498,23 +2562,69 @@ def _render_scanner_progress() -> None:
     seen = int(update.get("files_seen", 0) or 0)
     upserted = int(update.get("files_upserted", 0) or 0)
     errors = int(update.get("files_errors", 0) or 0)
-    fps = float(update.get("files_per_second", 0.0) or 0.0)
     elapsed = float(update.get("elapsed_s", 0.0) or 0.0)
+    fps = float(update.get("files_per_second", 0.0) or 0.0)
+    raw_estimate = update.get("estimated_files")
+    estimated = int(raw_estimate) if raw_estimate else None
+
+    tracker = st.session_state.get("scan_rate")
+    if not isinstance(tracker, RateTracker):
+        tracker = RateTracker()
+        st.session_state.scan_rate = tracker
+
+    if status == "running":
+        sample = (round(elapsed, 3), seen)
+        if st.session_state.get("scan_last_sample") != sample:
+            tracker.add(elapsed, seen)
+            st.session_state.scan_last_sample = sample
+
+    eta_seconds = None
+    eta_stable = False
+    if status == "running" and estimated:
+        eta_seconds = tracker.eta_seconds(max(0, estimated - seen))
+        eta_stable = eta_seconds is not None
+    view = progress_view(
+        status,
+        seen,
+        estimated,
+        eta_seconds=eta_seconds,
+        eta_stable=eta_stable,
+    )
+
+    if view.fraction is None:
+        if status == "running":
+            st.info("Progression en cours — estimation indisponible.")
+    else:
+        if status == "completed":
+            bar_label = f"Terminé : {view.percent_label}"
+        else:
+            bar_label = f"Progression estimée : {view.percent_label}"
+        st.progress(min(max(view.fraction, 0.0), 1.0), text=bar_label)
+        if status == "running" and estimated and not update.get(
+            "estimate_complete", True
+        ):
+            st.caption(
+                "Estimation partielle : le plafond d'analyse du pré-scan a été "
+                "atteint, la progression reste indicative."
+            )
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Statut", status.upper())
     col2.metric("Fichiers vus", f"{seen:,}")
     col3.metric("Écrits / actualisés", f"{upserted:,}")
     col4.metric("Erreurs", f"{errors:,}")
-    st.caption(
-        f"Chemin courant : {update.get('path', '—') or '—'} · "
-        f"{fps:,.1f} fichiers/s · {elapsed:,.1f}s"
-    )
+    st.caption(f"Chemin courant : {update.get('path', '—') or '—'}")
+    timing = f"Débit : {fps:,.0f} fichiers/s · Temps : {format_duration(elapsed)}"
+    if status == "running" and view.eta_seconds is not None:
+        timing += f" · ETA : ~{format_duration(view.eta_seconds)}"
+    elif status == "running" and estimated and view.fraction is not None:
+        timing += " · ETA : estimation en cours"
+    st.caption(timing)
 
     if status == "running":
         st.info(
-            "Scan en cours : seuls des compteurs réels sont affichés, aucune "
-            "progression estimée n'est inventée."
+            "Progression estimée à partir d'un pré-scan borné, affichée à titre "
+            "indicatif : seuls les compteurs réels font foi."
         )
     elif status == "completed":
         st.success(
@@ -2524,13 +2634,34 @@ def _render_scanner_progress() -> None:
         )
     elif status == "cancelled":
         st.warning(
-            "Scan annulé. Aucune réconciliation destructive n'a été effectuée."
+            "Scan annulé. La barre est arrêtée et aucune réconciliation "
+            "destructive n'a été effectuée."
         )
     elif status == "failed":
         st.error(
-            "Scan échoué en mode fail-closed. Aucune réconciliation destructive "
-            f"n'a été effectuée. {update.get('message', '')}"
+            "Scan échoué en mode fail-closed. La barre est arrêtée et aucune "
+            f"réconciliation destructive n'a été effectuée. {update.get('message', '')}"
         )
+
+
+def _scanner_progress_fragment() -> None:
+    """Auto-refreshing progress panel (display only)."""
+    _scanner_drain_updates()
+    _render_scanner_progress()
+    status = st.session_state.get("scan_status")
+    thread = st.session_state.get("scan_thread")
+    alive = bool(thread is not None and thread.is_alive())
+    if status in {"completed", "failed", "cancelled"} and not alive:
+        st.rerun(scope="app")
+
+
+if hasattr(st, "fragment"):
+    try:
+        _scanner_progress_fragment = st.fragment(run_every=1.5)(
+            _scanner_progress_fragment
+        )
+    except TypeError:  # pragma: no cover - very old Streamlit without run_every
+        pass
 
 
 def scanner_page():
@@ -2586,6 +2717,8 @@ def scanner_page():
             st.session_state.scan_cancel_event = cancel_event
             st.session_state.scan_thread = worker
             st.session_state.scan_status = "running"
+            st.session_state.scan_rate = RateTracker()
+            st.session_state.scan_last_sample = None
             st.session_state.scan_update = {
                 "status": "running",
                 "path": selected_paths[0],
@@ -2617,8 +2750,11 @@ def scanner_page():
             st.session_state.redirect_to_stats = True
             st.rerun()
 
-    _scanner_drain_updates()
-    _render_scanner_progress()
+    if running or st.session_state.get("scan_status") == "running":
+        _scanner_progress_fragment()
+    else:
+        _scanner_drain_updates()
+        _render_scanner_progress()
 
     if st.session_state.get("scan_history"):
         with st.expander("Historique de cette session"):
