@@ -198,6 +198,14 @@ class FastScannerEngine:
         else:
             for item in batch:
                 yield item
+            batch.clear()
+            # File-level access errors are just as dangerous for reconciliation
+            # as directory-level errors: an unseen existing path must not be
+            # inferred to be deleted.  Raise only after yielding safe metadata.
+            if self.progress.error_files and not self._cancelled:
+                raise RuntimeError(
+                    f"scan incomplete: {self.progress.error_files} filesystem access errors"
+                )
         finally:
             if progress_callback:
                 self.progress.current_file = (
@@ -238,15 +246,9 @@ class FastScannerEngine:
         return False
 
     def _extract_file_info_fast(self, file_path: Path) -> Optional[FileInfo]:
-        """Extract metadata for regular files only.
-
-        OSError/PermissionError intentionally propagate to the scan loop, which
-        counts them and prevents a partial scan from being reconciled as complete.
-        """
+        """Extract metadata for regular files only."""
         stat_result = file_path.stat()
 
-        # Never index FIFO/socket/device entries as ordinary documents. Opening
-        # such entries later in an extractor can block or have side effects.
         if not stat.S_ISREG(stat_result.st_mode):
             self.progress.skipped_files += 1
             return None
