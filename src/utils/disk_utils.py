@@ -1,252 +1,262 @@
 """Disk utilities for drive detection and selection."""
 
 import os
+import platform
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any
-import platform
+from typing import Any, Dict, List
+
 
 def get_available_drives() -> List[Dict[str, Any]]:
-    """Get list of available drives with details."""
-    drives = []
-    
+    """Return user-meaningful mounted volumes, not every kernel mount.
+
+    On Linux ``/proc/mounts`` contains pseudo filesystems, bind mounts, sandbox
+    mounts and application mounts.  Those are not disks and must not inflate the
+    UI's drive count.  Physical/local volumes are deduplicated by ``st_dev`` so
+    one filesystem exposed at several mount points is shown once.
+    """
+    drives: List[Dict[str, Any]] = []
+
     if platform.system() == "Windows":
-        # Windows: Check all drive letters
         for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-            drive_path = f"{letter}:\\"
-            if os.path.exists(drive_path):
-                try:
-                    # Get drive info
-                    total, used, free = shutil.disk_usage(drive_path)
-                    
-                    # Determine drive type
-                    drive_type = _get_drive_type_windows(letter)
-                    
-                    drives.append({
-                        'letter': letter,
-                        'path': drive_path,
-                        'label': _get_drive_label_windows(letter),
-                        'type': drive_type,
-                        'total_space': total,
-                        'used_space': used,
-                        'free_space': free,
-                        'usage_percent': (used / total) * 100 if total > 0 else 0,
-                        'display_name': f"{letter}: ({_format_size(total)}) - {_get_drive_label_windows(letter) or 'Local Disk'}"
-                    })
-                except:
-                    # Drive not accessible
-                    continue
-    
+            drive_path = f"{letter}:\\\\"
+            if not os.path.exists(drive_path):
+                continue
+            try:
+                total, used, free = shutil.disk_usage(drive_path)
+            except OSError:
+                continue
+            drive_type = _get_drive_type_windows(letter)
+            label = _get_drive_label_windows(letter)
+            drives.append({
+                "letter": letter,
+                "path": drive_path,
+                "label": label,
+                "type": drive_type,
+                "total_space": total,
+                "used_space": used,
+                "free_space": free,
+                "usage_percent": (used / total) * 100 if total else 0,
+                "display_name": f"{letter}: ({_format_size(total)}) - {label or 'Local Disk'}",
+            })
     else:
-        # Linux/Mac: Check mount points
         drives = _get_unix_drives()
-    
-    return sorted(drives, key=lambda x: x['letter'] if 'letter' in x else x['path'])
+
+    return sorted(drives, key=lambda item: item.get("letter", item["path"]))
+
 
 def _get_drive_type_windows(letter: str) -> str:
-    """Get Windows drive type."""
     import ctypes
-    from ctypes import wintypes
-    
+
     try:
-        drive_path = f"{letter}:\\"
-        drive_type = ctypes.windll.kernel32.GetDriveTypeW(drive_path)
-        
-        type_map = {
+        drive_type = ctypes.windll.kernel32.GetDriveTypeW(f"{letter}:\\\\")
+        return {
             0: "unknown",
             1: "invalid",
-            2: "removable",  # Floppy, USB, etc.
-            3: "fixed",      # Hard disk
-            4: "remote",     # Network drive
-            5: "cdrom",      # CD/DVD
-            6: "ramdisk"     # RAM disk
-        }
-        
-        return type_map.get(drive_type, "unknown")
-    except:
+            2: "removable",
+            3: "fixed",
+            4: "remote",
+            5: "cdrom",
+            6: "ramdisk",
+        }.get(drive_type, "unknown")
+    except Exception:
         return "unknown"
 
+
 def _get_drive_label_windows(letter: str) -> str:
-    """Get Windows drive label."""
+    import ctypes
+
     try:
-        import ctypes
-        from ctypes import wintypes
-        
-        drive_path = f"{letter}:\\"
-        volume_name_buffer = ctypes.create_unicode_buffer(1024)
-        file_system_name_buffer = ctypes.create_unicode_buffer(1024)
-        
+        drive_path = f"{letter}:\\\\"
+        volume_name = ctypes.create_unicode_buffer(1024)
+        fs_name = ctypes.create_unicode_buffer(1024)
         result = ctypes.windll.kernel32.GetVolumeInformationW(
             ctypes.c_wchar_p(drive_path),
-            volume_name_buffer, ctypes.sizeof(volume_name_buffer),
-            None, None, None,
-            file_system_name_buffer, ctypes.sizeof(file_system_name_buffer)
+            volume_name,
+            ctypes.sizeof(volume_name),
+            None,
+            None,
+            None,
+            fs_name,
+            ctypes.sizeof(fs_name),
         )
-        
-        if result:
-            return volume_name_buffer.value or ""
+        return volume_name.value if result else ""
+    except Exception:
         return ""
-    except:
-        return ""
+
+
+def _decode_mount_field(value: str) -> str:
+    """Decode the escaping used by /proc/mounts."""
+    return (
+        value.replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+    )
+
+
+def _is_user_volume_source(device: str, fs_type: str, mount_point: str) -> bool:
+    """Return whether a mount represents a selectable storage volume."""
+    # Real Linux block devices, including LUKS/LVM/device-mapper volumes.
+    if device.startswith("/dev/"):
+        return True
+
+    # Common network-volume sources.  They are legitimate selectable volumes,
+    # but remain classified separately from local fixed disks.
+    if device.startswith("//") or fs_type in {"cifs", "smb3", "nfs", "nfs4"}:
+        return True
+
+    # Everything else in /proc/mounts (proc, sysfs, tmpfs, overlay, portal,
+    # squashfs, gvfs, Flatpak/Snap helper mounts, etc.) is not a physical disk.
+    return False
+
 
 def _get_unix_drives() -> List[Dict[str, Any]]:
-    """Get Unix/Linux/Mac mount points."""
-    drives = []
-    
+    """Return mounted storage volumes on Linux/Unix without pseudo mounts."""
+    drives: List[Dict[str, Any]] = []
+    seen_local_devices: set[int] = set()
+    seen_remote: set[tuple[str, str]] = set()
+
     try:
-        with open('/proc/mounts', 'r') as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    device, mount_point = parts[0], parts[1]
-                    
-                    # Skip system mounts
-                    if mount_point.startswith(('/proc', '/sys', '/dev', '/run')):
-                        continue
-                    
-                    # Skip temporary mounts
-                    if 'tmpfs' in device or 'devpts' in device:
-                        continue
-                    
-                    try:
-                        total, used, free = shutil.disk_usage(mount_point)
-                        
-                        drives.append({
-                            'device': device,
-                            'path': mount_point,
-                            'label': os.path.basename(mount_point) or device,
-                            'type': 'fixed',
-                            'total_space': total,
-                            'used_space': used,
-                            'free_space': free,
-                            'usage_percent': (used / total) * 100 if total > 0 else 0,
-                            'display_name': f"{mount_point} ({_format_size(total)}) - {device}"
-                        })
-                    except:
-                        continue
-    except:
-        # Fallback to root
+        with open("/proc/mounts", "r", encoding="utf-8") as mounts:
+            rows = list(mounts)
+    except OSError:
+        rows = []
+
+    for line in rows:
+        parts = line.strip().split()
+        if len(parts) < 3:
+            continue
+        raw_device, raw_mount, fs_type = parts[:3]
+        device = _decode_mount_field(raw_device)
+        mount_point = _decode_mount_field(raw_mount)
+
+        if not _is_user_volume_source(device, fs_type, mount_point):
+            continue
+        if not os.path.isdir(mount_point):
+            continue
+
         try:
-            total, used, free = shutil.disk_usage('/')
+            stat_result = os.stat(mount_point)
+            total, used, free = shutil.disk_usage(mount_point)
+        except OSError:
+            continue
+
+        is_remote = device.startswith("//") or fs_type in {"cifs", "smb3", "nfs", "nfs4"}
+        if is_remote:
+            remote_key = (device, mount_point)
+            if remote_key in seen_remote:
+                continue
+            seen_remote.add(remote_key)
+            drive_type = "remote"
+        else:
+            # st_dev identifies the mounted filesystem.  Bind mounts and other
+            # aliases of the same filesystem must not appear as extra disks.
+            device_id = int(stat_result.st_dev)
+            if device_id in seen_local_devices:
+                continue
+            seen_local_devices.add(device_id)
+            drive_type = (
+                "removable"
+                if mount_point.startswith(("/media/", "/run/media/"))
+                else "fixed"
+            )
+
+        label = os.path.basename(mount_point.rstrip("/")) or device
+        drives.append({
+            "device": device,
+            "path": mount_point,
+            "label": label,
+            "type": drive_type,
+            "fs_type": fs_type,
+            "total_space": total,
+            "used_space": used,
+            "free_space": free,
+            "usage_percent": (used / total) * 100 if total else 0,
+            "display_name": f"{mount_point} ({_format_size(total)}) - {device}",
+        })
+
+    if not drives:
+        try:
+            total, used, free = shutil.disk_usage("/")
             drives.append({
-                'device': '/',
-                'path': '/',
-                'label': 'Root',
-                'type': 'fixed',
-                'total_space': total,
-                'used_space': used,
-                'free_space': free,
-                'usage_percent': (used / total) * 100 if total > 0 else 0,
-                'display_name': f"/ ({_format_size(total)}) - Root"
+                "device": "/",
+                "path": "/",
+                "label": "Root",
+                "type": "fixed",
+                "total_space": total,
+                "used_space": used,
+                "free_space": free,
+                "usage_percent": (used / total) * 100 if total else 0,
+                "display_name": f"/ ({_format_size(total)}) - Root",
             })
-        except:
+        except OSError:
             pass
-    
+
     return drives
 
+
 def _format_size(size_bytes: int) -> str:
-    """Format file size in human readable format."""
     if size_bytes == 0:
         return "0 B"
-    
-    size_names = ["B", "KB", "MB", "GB", "TB", "PB"]
-    i = 0
+    names = ["B", "KB", "MB", "GB", "TB", "PB"]
+    index = 0
     size = float(size_bytes)
-    while size >= 1024.0 and i < len(size_names) - 1:
+    while size >= 1024.0 and index < len(names) - 1:
         size /= 1024.0
-        i += 1
-    
-    return f"{size:.1f} {size_names[i]}"
+        index += 1
+    return f"{size:.1f} {names[index]}"
+
 
 def get_recommended_drives() -> List[str]:
-    """Get recommended drives to scan (exclude system/temporary drives)."""
-    drives = get_available_drives()
-    recommended = []
-    
-    for drive in drives:
-        # Skip system drives with low free space
-        if drive['usage_percent'] > 95:
+    """Return sensible default volumes for scanning."""
+    recommended: List[str] = []
+    for drive in get_available_drives():
+        if drive["usage_percent"] > 95:
             continue
-            
-        # Skip very small drives (< 1GB)
-        if drive['total_space'] < 1024 * 1024 * 1024:
+        if drive["total_space"] < 1024**3:
             continue
-            
-        # Skip CD/DVD drives
-        if drive.get('type') == 'cdrom':
+        if drive.get("type") in {"cdrom", "ramdisk", "remote"}:
             continue
-            
-        # Skip RAM disks
-        if drive.get('type') == 'ramdisk':
-            continue
-        
-        recommended.append(drive['path'])
-    
+        recommended.append(drive["path"])
     return recommended
 
+
 def validate_scan_path(path: str) -> Dict[str, Any]:
-    """Validate if a path is suitable for scanning."""
-    result = {
-        'valid': False,
-        'accessible': False,
-        'writable': False,
-        'estimated_files': 0,
-        'warnings': [],
-        'errors': []
+    """Validate a scan path without inventing a misleading file-count estimate."""
+    result: Dict[str, Any] = {
+        "valid": False,
+        "accessible": False,
+        "writable": False,
+        "estimated_files": 0,
+        "warnings": [],
+        "errors": [],
     }
-    
+
     try:
         path_obj = Path(path)
-        
-        # Check if path exists
         if not path_obj.exists():
-            result['errors'].append(f"Path does not exist: {path}")
+            result["errors"].append(f"Path does not exist: {path}")
             return result
-        
-        result['accessible'] = True
-        
-        # Check if readable
-        if not os.access(path, os.R_OK):
-            result['errors'].append(f"Path not readable: {path}")
+        if not path_obj.is_dir():
+            result["errors"].append(f"Path is not a directory: {path}")
             return result
-        
-        # Check if writable (for database operations)
-        result['writable'] = os.access(path, os.W_OK)
-        if not result['writable']:
-            result['warnings'].append("Path is read-only - some features may be limited")
-        
-        # Estimate file count (quick sample)
-        try:
-            file_count = 0
-            dir_count = 0
-            sample_size = 0
-            
-            for root, dirs, files in os.walk(path):
-                file_count += len(files)
-                dir_count += len(dirs)
-                sample_size += 1
-                
-                # Stop after sampling 10 directories
-                if sample_size >= 10:
-                    break
-            
-            # Estimate total files
-            if sample_size > 0:
-                avg_files_per_dir = file_count / sample_size
-                estimated_total = int(avg_files_per_dir * dir_count * 1.5)  # Rough estimate
-                result['estimated_files'] = min(estimated_total, 1000000)  # Cap at 1M
-            
-        except Exception as e:
-            result['warnings'].append(f"Could not estimate file count: {e}")
-        
-        # Check for very large directories
-        if result['estimated_files'] > 100000:
-            result['warnings'].append(f"Large directory detected (~{result['estimated_files']:,} files) - scanning may take time")
-        
-        # Success
-        result['valid'] = True
-        
-    except Exception as e:
-        result['errors'].append(f"Path validation error: {e}")
-    
+
+        result["accessible"] = os.access(path, os.R_OK | os.X_OK)
+        if not result["accessible"]:
+            result["errors"].append(f"Path not readable/traversable: {path}")
+            return result
+
+        # Scanning is read-only.  Lack of write permission on the source volume
+        # is not a limitation because the SQLite DB lives elsewhere.
+        result["writable"] = os.access(path, os.W_OK)
+        result["valid"] = True
+
+        # A 10-directory sample produced spectacularly wrong estimates on real
+        # Linux roots (e.g. ~2,028 vs >1.5M files).  Until a bounded estimator is
+        # statistically defensible, report no estimate rather than false data.
+        result["estimated_files"] = 0
+    except Exception as exc:
+        result["errors"].append(f"Path validation error: {exc}")
+
     return result
