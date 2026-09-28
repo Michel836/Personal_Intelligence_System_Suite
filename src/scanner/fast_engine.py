@@ -223,7 +223,21 @@ class FastScannerEngine:
         return "\\appdata\\local\\temp" in lowered
 
     def _should_skip_file_fast(self, file_path: Path) -> bool:
-        """Ultra-fast file skip check."""
+        """Ultra-fast file skip check.
+
+        Symlinks are intentionally excluded.  Following a file symlink during
+        ``stat()`` can cross the selected filesystem boundary even though
+        ``os.walk(..., followlinks=False)`` correctly avoids directory symlinks.
+        Keeping symlinks out of the metadata index preserves the invariant that
+        one scan contains objects from exactly one selected filesystem and also
+        avoids duplicate aliases of the same target.
+        """
+        try:
+            if file_path.is_symlink():
+                return True
+        except OSError:
+            return True
+
         # Skip by extension
         ext = file_path.suffix.lower()
         if ext in self._skip_extensions:
