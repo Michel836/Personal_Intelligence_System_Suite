@@ -10,4 +10,4 @@ if [ ! -x "$PY" ]; then
 fi
 
 cd "$ROOT"
-exec "$PY" -m src.launcher --profile lite "$@"
+exec "$PY" -m src.launcher --profile lite --single-instance "$@"

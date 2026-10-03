@@ -1,6 +1,19 @@
 """Streamlit UI for 36TB Intelligence."""
 
 import streamlit as st
+
+# The canonical entry point serves Lite before loading historical UI services.
+# Imports of this module still expose compatibility helpers used by tests.
+if __name__ == "__main__":
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+    from src.core.launch_profile import LaunchProfile as _LaunchProfile, current_profile as _current_profile
+    if _current_profile() == _LaunchProfile.LITE:
+        st.set_page_config(page_title="PISS Lite", page_icon="🔍", layout="wide")
+        from src.ui.lite_app import render as _render_lite
+        _render_lite()
+        st.stop()
 import pandas as pd
 from pathlib import Path
 import os
@@ -167,6 +180,9 @@ _NAVIGATION: list[tuple[str, Capability]] = [
 
 
 def _navigation_pages() -> list[str]:
+    if current_profile().value == "lite":
+        from src.ui.lite_app import PAGES
+        return list(PAGES)
     caps = capabilities_for(current_profile())
     return [label for label, capability in _NAVIGATION if capability in caps]
 

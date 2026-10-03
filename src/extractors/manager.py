@@ -35,8 +35,10 @@ _EXTRACTOR_FACTORIES = (
 class ExtractionManager:
     """Manages content extraction from multiple file types."""
 
-    def __init__(self, max_workers: int = 1):
-        self.extractors: list[BaseExtractor] = [factory() for factory in _EXTRACTOR_FACTORIES]
+    def __init__(self, max_workers: int = 1, *, extractors: list[BaseExtractor] | None = None):
+        self.extractors: list[BaseExtractor] = (
+            [factory() for factory in _EXTRACTOR_FACTORIES] if extractors is None else extractors
+        )
         self.max_workers = max_workers
 
         # Statistics

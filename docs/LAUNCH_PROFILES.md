@@ -1,9 +1,17 @@
 # Launch Profiles — Operations Guide (M012-B2)
 
+## Lite MVP update
+
+The Lite user interface now has four workflow screens. Its backend capability
+registry remains compatible with existing services; navigation is deliberately
+simpler than that registry. See [LITE_MVP.md](LITE_MVP.md) for the authoritative
+Lite workflow and installation dependency set. SMART/FULL keep their existing UI.
+
 One canonical application (`src/ui/app.py`) is launched through three coherent
-profiles: **LITE**, **SMART** and **FULL**.  Profiles never fork the UI; they
-change *defaults* (AI mode, heavyweight processing, capability exposure) and are
-always overridable from the environment.  This document is the current
+profiles: **LITE**, **SMART** and **FULL**. Lite now presents four workflow
+screens; SMART/FULL retain the broader navigation. Profiles change defaults
+(AI mode, heavyweight processing, capability exposure), with environment
+overrides for backend services. This document is the current
 operations reference; the historical README launch claims are reviewed at the
 end.
 

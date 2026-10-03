@@ -161,6 +161,13 @@ class ScanService:
                             break
                         except queue.Full:
                             continue
+            except Exception as exc:
+                while not stop.is_set():
+                    try:
+                        work.put(exc, timeout=0.2)
+                        break
+                    except queue.Full:
+                        continue
             finally:
                 while True:
                     try:
@@ -174,16 +181,29 @@ class ScanService:
         producer.start()
         try:
             while True:
-                item = work.get()
+                if cancel_event is not None and cancel_event.is_set():
+                    stop.set()
+                    scanner.cancel()
+                    break
+                try:
+                    item = work.get(timeout=0.2)
+                except queue.Empty:
+                    if not producer.is_alive():
+                        break
+                    continue
                 if item is _SCAN_SENTINEL:
                     break
                 if cancel_event is not None and cancel_event.is_set():
                     stop.set()
-                    continue
+                    scanner.cancel()
+                    break
+                if isinstance(item, Exception):
+                    raise item
                 assert isinstance(item, FileInfo)
                 yield item
         finally:
             stop.set()
+            scanner.cancel()
             try:
                 while True:
                     work.get_nowait()
@@ -201,6 +221,10 @@ class ScanService:
         """Scan a single root through the lifecycle and return the outcome."""
         scanner = FastScannerEngine()
         try:
+            if not Path(request.root).is_dir():
+                raise ValueError("scan root must be an existing directory")
+            if request.batch_size < 1:
+                raise ValueError("batch_size must be positive")
             info = self.db.begin_scan(request.root, volume=request.volume)
         except Exception as exc:  # overlapping run, DB error, ...
             logger.error(f"could not start scan for {request.root}: {exc}")
@@ -239,6 +263,10 @@ class ScanService:
                 if batch:
                     result.files_upserted += self.db.record_scan_files(result.run_id, batch)
                     result.files_seen += len(batch)
+
+            result.files_errors = scanner.progress.error_files
+            if result.files_errors:
+                raise RuntimeError(f"scan incomplete: {result.files_errors} file access error(s)")
 
             # Triggers restored and FTS rebuilt before reconciliation runs.
             rec = self.db.complete_scan(result.run_id)

@@ -106,11 +106,19 @@ class FastScannerEngine:
         
         try:
             # Single pass with os.walk (much faster than pathlib.rglob)
-            for root, dirs, files in os.walk(str(path)):
+            def traversal_error(error):
+                raise error
+
+            for root, dirs, files in os.walk(str(path), onerror=traversal_error):
+                if self._cancelled:
+                    break
                 # Skip system directories
                 if self._should_skip_directory(Path(root)):
                     dirs.clear()  # Don't recurse into subdirs
                     continue
+                # Prune before traversal: excluded technical folders must not
+                # cause permission errors or pay for a recursive walk.
+                dirs[:] = [d for d in dirs if not self._should_skip_directory(Path(root) / d)]
                 
                 # Process files in current directory
                 for filename in files:
@@ -161,6 +169,7 @@ class FastScannerEngine:
         
         except Exception as e:
             logger.error(f"Scan error: {e}")
+            raise
         finally:
             # Yield remaining files
             for item in batch:
@@ -233,9 +242,11 @@ class FastScannerEngine:
             return file_info
             
         except (OSError, PermissionError) as e:
+            self.progress.error_files += 1
             logger.debug(f"Cannot access {file_path}: {e}")
             return None
         except Exception as e:
+            self.progress.error_files += 1
             logger.error(f"Error processing {file_path}: {e}")
             return None
     
