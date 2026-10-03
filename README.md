@@ -23,6 +23,11 @@ source files are never modified.
 
 ## 🎯 Quick Start (Linux / Kubuntu first)
 
+**PISS Lite MVP:** four screens for scan → extraction → search/preview → system
+state and backup. Install with `requirements-lite.txt`; see
+[the Lite MVP guide](docs/LITE_MVP.md) for the current scope, limits and acceptance
+tests. SMART/FULL retain the broader interface below.
+
 **One canonical application, three launch profiles (M012-B2).** Every profile
 runs the same app (`src/ui/app.py`); they differ only in defaults and which
 advanced capabilities are exposed. See
