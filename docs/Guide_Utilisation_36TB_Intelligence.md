@@ -552,6 +552,12 @@ pis context 12
 - **PII** : détection validée (email, téléphone, adresse, IBAN, carte, etc.),
   **stockée masquée + empreinte** uniquement. Aucune valeur brute n'est
   exportée.
+- **Page Document Intelligence** : seuls les documents dont le texte a été
+  extrait sont analysés. Cochez **« Inclure les documents issus d'archives »**
+  pour analyser aussi les membres ZIP/TAR/7z/RAR. Les fichiers dépassant
+  **50 Mio** restent indexés en métadonnées (limite d'extraction) : ouvrez-les
+  directement ou lancez `pis extract` pour les formats pris en charge.
+  L'analyse est incrémentale : relancer ne retraite que les documents modifiés.
 - **Timeline** : sources de dates explicites (`KNOWN`/`DERIVED`), jamais
   inventées.
 - **Galaxie** : projection PCA/SVD bornée ; agrégation pour les gros volumes.

@@ -119,3 +119,34 @@ def test_restart_consistency(tmp_path, file_info_factory) -> None:
     store2 = IntelStore(DatabaseManager(tmp_path / "db.db"))
     assert store2.get_language(fid)["lang"] == "fr"
     assert IntelPipeline(DatabaseManager(tmp_path / "db.db"), store=store2).run(min_chars=10)["processed"] == 0
+
+
+def test_include_members_toggle(tmp_path, file_info_factory) -> None:
+    """Archive members are only analysed when explicitly included."""
+    db = DatabaseManager(tmp_path / "db.db")
+    store = IntelStore(db)
+    pipe = IntelPipeline(db, store=store)
+
+    p = tmp_path / "facture.txt"
+    p.write_text(FR)
+    fid = _save(db, file_info_factory, p)
+    _set_content(db, fid, FR)
+
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO files (path, filename, extension, size_bytes, modified_at, "
+            "state, document_kind, content_extracted, content_text, indexed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("/archive.zip::doc.txt", "doc.txt", ".txt", 100, "2026-01-01",
+             "ACTIVE", "ARCHIVE_MEMBER", 1, DE, "2026-01-01 00:00:00"),
+        )
+        member_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.commit()
+
+    first = pipe.run(min_chars=10, include_members=False)
+    assert first["processed"] == 1
+    assert store.get_language(member_id) is None
+
+    second = pipe.run(min_chars=10, include_members=True)
+    assert second["processed"] == 1
+    assert store.get_language(member_id)["lang"] == "de"

@@ -74,12 +74,36 @@ def _render_overview(store: Any) -> None:
     c1, c2 = st.columns(2)
     limit = c1.number_input("Max documents (bounded)", min_value=100, value=5000, step=1000)
     min_chars = c2.number_input("Minimum content characters", min_value=1, value=50)
+    include_members = st.checkbox(
+        "Inclure les documents issus d'archives (ZIP, TAR, 7z, RAR…)",
+        value=True,
+        help=(
+            "Les membres d'archives possèdent aussi un texte extrait. "
+            "Décochez pour n'analyser que les fichiers physiques."
+        ),
+    )
+    st.caption(
+        "Seuls les documents dont le texte a été extrait sont analysés. "
+        "Les fichiers dépassant 50 Mio ne sont pas extraits (limite de sécurité) : "
+        "ils restent indexés en métadonnées. Utilisez « pis extract » pour les "
+        "formats pris en charge, ou ouvrez le fichier directement."
+    )
     if st.button("Analyse documents", key="m015_run"):
         audit = _audit()
         with st.spinner("Detecting language, entities, categories and PII..."):
-            res = _pipeline().run(limit=int(limit), min_chars=int(min_chars), include_members=False)
+            res = _pipeline().run(
+                limit=int(limit), min_chars=int(min_chars),
+                include_members=bool(include_members),
+            )
         audit.record("intel_pipeline_run", detail=f"processed={res['processed']}", sensitivity="normal")
-        st.success(f"Processed {res['processed']:,} documents ({res['docs_per_sec']} docs/s).")
+        if res["processed"]:
+            st.success(f"Processed {res['processed']:,} documents ({res['docs_per_sec']} docs/s).")
+        else:
+            st.warning(
+                "Aucun document éligible : aucun texte extrait (ou déjà analysé). "
+                "Lancez « pis extract » puis réessayez ; les fichiers > 50 Mio "
+                "restent en métadonnées seulement."
+            )
     stats = store.stats()
     st.markdown("**Language distribution**")
     st.bar_chart(stats["languages"]) if stats["languages"] else st.info("No language data yet.")

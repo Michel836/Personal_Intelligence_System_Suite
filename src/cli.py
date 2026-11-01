@@ -381,7 +381,10 @@ def cmd_duplicates(args: argparse.Namespace) -> int:
 def cmd_intel(args: argparse.Namespace) -> int:
     from .intel.pipeline import IntelPipeline
     db = _active_db(args)
-    result = IntelPipeline(db).run(limit=_bound(args.limit), scope_prefix=args.scope)
+    result = IntelPipeline(db).run(
+        limit=_bound(args.limit), scope_prefix=args.scope,
+        include_members=bool(getattr(args, "include_members", False)),
+    )
     return _emit(args, result, f"intel: processed={result.get('processed')} "
                                f"pii_docs={result.get('pii_docs')}")
 
@@ -811,6 +814,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("intel", help="run the intelligence pipeline")
     p.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     p.add_argument("--scope", default=None)
+    p.add_argument("--include-members", dest="include_members", action="store_true",
+                   help="also analyse archive members with extracted text")
     p.set_defaults(func=cmd_intel)
 
     p = sub.add_parser("graph", help="bounded graph queries")
