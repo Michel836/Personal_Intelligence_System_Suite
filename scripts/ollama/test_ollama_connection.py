@@ -24,13 +24,13 @@ print("\n2. Test avec un modèle...")
 try:
     models = ollama.list()
     model_names = [m['name'] for m in models.get('models', [])]
-    
+
     test_model = None
     for model in ['deepseek-r1', 'deepseek', 'llama3.2:3b', 'llama3.2:1b']:
         if any(model in name for name in model_names):
             test_model = model
             break
-    
+
     if test_model:
         print(f"   Test avec {test_model}...")
         response = ollama.chat(
@@ -40,7 +40,7 @@ try:
         print(f"   Réponse: {response['message']['content']}")
     else:
         print("   Aucun modèle trouvé. Téléchargez: ollama pull deepseek-r1")
-        
+
 except Exception as e:
     print(f"   ERREUR: {e}")
 

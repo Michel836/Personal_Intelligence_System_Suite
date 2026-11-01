@@ -18,6 +18,7 @@ import numpy.typing as npt
 from loguru import logger
 
 from ..intelligence.embedding_store import EmbeddingMatrixStore
+from ..core.paths import embeddings_dir as _default_embeddings_dir
 from .aggregate import (
     bucket as _bucket,
 )
@@ -102,7 +103,7 @@ def _safe_query(conn: Any, sql: str, params: list[Any]) -> list[Any]:
 
 def detect_store(base_dir: Path | None = None, model_key: str | None = None) -> EmbeddingMatrixStore | None:
     """Find the populated embedding matrix store without loading a model."""
-    base = base_dir or Path(os.environ.get("PIS_EMBEDDING_STORE_DIR") or "data/cache/embeddings")
+    base = base_dir or Path(os.environ.get("PIS_EMBEDDING_STORE_DIR") or _default_embeddings_dir())
     if not base.exists():
         return None
     best: tuple[int, dict[str, Any]] | None = None

@@ -7,12 +7,24 @@ One entry point, mapping to the canonical services (no blind script wrapping)::
 Every command supports ``--json``. Expensive operations are bounded, destructive
 ones require explicit confirmation, and the resolved database is always shown so
 a production and a trial target cannot be confused.
+
+Exit codes (stable contract):
+
+* ``0`` — success / complete;
+* ``2`` — invalid input, hard failure or unexpected runtime error;
+* ``3`` — partial success: scan completed with unreadable or excluded scopes,
+  or an operation was cancelled.
+
+The human-readable stream keeps stdout clean; the resolved database path is
+printed on stderr (and in ``_meta`` for ``--json``).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -33,12 +45,36 @@ def _active_db(args: argparse.Namespace) -> Any:
     return DatabaseManager()
 
 
-def _emit(args: argparse.Namespace, data: Any, human: str) -> int:
+def _emit(args: argparse.Namespace, data: Any, human: str, *, code: int = 0) -> int:
     if getattr(args, "json", False):
-        print(json.dumps(data, indent=2, ensure_ascii=False))  # noqa: T201
+        payload = data
+        if isinstance(data, dict):
+            payload = {**data, "_meta": _meta(args)}
+        print(json.dumps(payload, indent=2, ensure_ascii=False))  # noqa: T201
     else:
         print(human)  # noqa: T201
-    return 0
+        sys.stderr.write(f"db: {_resolved_db_path(args)}\n")
+    return int(code)
+
+
+def _resolved_db_path(args: argparse.Namespace) -> str:
+    """Return the resolved absolute database path without opening it."""
+    from .core.paths import resolve_db_path
+
+    try:
+        return str(resolve_db_path(getattr(args, "db", None), migrate=False))
+    except Exception:  # noqa: BLE001 - diagnostics must never break a command
+        return str(getattr(args, "db", None) or "unknown")
+
+
+def _meta(args: argparse.Namespace) -> dict[str, Any]:
+    from .core.paths import data_dir
+
+    return {
+        "db": _resolved_db_path(args),
+        "data_dir": str(data_dir()),
+        "command": getattr(args, "command", None),
+    }
 
 
 def _db_label(db: Any) -> str:
@@ -50,9 +86,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     from .ops.health import health_report
     db = _active_db(args)
     report = health_report(db, include_paths=True)
+    coverage = report.get("semantic_coverage") or {}
     human = (f"status={report['status']} db={_db_label(db)} "
              f"files={report['db'].get('files_total')} "
              f"queue={report['ingestion_queue'].get('total')} "
+             f"semantic={coverage.get('percent', 0)}% "
+             f"({coverage.get('embedded', 0)}/{coverage.get('eligible', 0)}) "
              f"policy={report['privacy_policy']}")
     return _emit(args, report, human)
 
@@ -62,7 +101,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     db = _active_db(args)
     report = run_doctor(db, deep=args.deep, include_paths=True)
     rows = "\n".join(f"  {c['status']:15} {c['name']}: {c['detail']}" for c in report["checks"])
-    return _emit(args, report, f"doctor: {report['status']}\n{rows}")
+    # ERROR is actionable (exit 2); WARN/NOT_CONFIGURED are informational.
+    return _emit(args, report, f"doctor: {report['status']}\n{rows}",
+                 code=2 if report["status"] == "ERROR" else 0)
+
+
+def _scan_exit_code(status: str) -> int:
+    """Stable scan exit-code contract: 0 complete, 3 partial, 2 failed."""
+    if status == "COMPLETED":
+        return 0
+    if status in {"COMPLETED_WITH_WARNINGS", "CANCELLED"}:
+        return 3
+    return 2
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
@@ -74,12 +124,26 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if args.dry_run:
         return _emit(args, {"dry_run": True, "root": str(root), "db": _db_label(db)},
                      f"dry-run scan root={root} db={_db_label(db)}")
-    result = ScanService(db).run(ScanRequest(root=root, limit=args.limit, batch_size=1000))
+    result = ScanService(db).run(ScanRequest(
+        root=root,
+        limit=args.limit,
+        batch_size=1000,
+        ignore_errors=bool(args.ignore_errors),
+        exclude_dirs=tuple(args.exclude_dirs or ()),
+        exclude_paths=tuple(args.exclude_paths or ()),
+    ))
     data = {"status": result.status, "files_seen": result.files_seen,
             "files_upserted": result.files_upserted, "errors": result.files_errors,
+            "unscanned_scopes": result.unscanned_scopes,
+            "reconciled": result.reconciled,
+            "warnings": result.warnings,
             "error": result.error}
-    return _emit(args, data, f"scan {result.status}: seen={result.files_seen} "
-                             f"upserted={result.files_upserted} errors={result.files_errors}")
+    human = (f"scan {result.status}: seen={result.files_seen} "
+             f"upserted={result.files_upserted} errors={result.files_errors} "
+             f"unscanned_scopes={result.unscanned_scopes}")
+    for warning in result.warnings:
+        sys.stderr.write(f"warning: {warning}\n")
+    return _emit(args, data, human, code=_scan_exit_code(result.status))
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
@@ -92,7 +156,13 @@ def cmd_extract(args: argparse.Namespace) -> int:
                      f"dry-run extract: {len(eligible)} eligible document(s)")
     result = IngestionPipeline(db).run(limit=_bound(args.limit), scope_prefix=args.scope,
                                        ocr_explicit=args.ocr)
-    return _emit(args, result, f"extract: attempted={result['attempted']} counts={result['counts']}")
+    from .ingest.taxonomy import RETRYABLE
+
+    problems = sum(int(result["counts"].get(k, 0)) for k in RETRYABLE)
+    problems += int(result["counts"].get("PERMANENT_ERROR", 0))
+    return _emit(args, result,
+                 f"extract: attempted={result['attempted']} counts={result['counts']}",
+                 code=3 if problems else 0)
 
 
 def cmd_retry(args: argparse.Namespace) -> int:
@@ -147,15 +217,151 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 
 def cmd_semantic_refresh(args: argparse.Namespace) -> int:
+    """Foreground, bounded refresh (prefer ``pis embed`` for long runs)."""
     db = _active_db(args)
     try:
         from .intelligence.semantic_search import SemanticSearchEngine
-        result = SemanticSearchEngine(db).refresh(batch_size=_bound(args.limit))
+        max_docs = None if getattr(args, "all", False) else _bound(args.limit)
+        result = SemanticSearchEngine(db).refresh(
+            batch_size=int(getattr(args, "batch_size", 256) or 256),
+            max_docs=max_docs,
+        )
     except Exception as exc:  # noqa: BLE001
         return _emit(args, {"available": False, "error": type(exc).__name__},
-                     f"semantic refresh unavailable: {type(exc).__name__}")
+                     f"semantic refresh unavailable: {type(exc).__name__}", code=3)
+    code = 0 if result.get("available") else 3
     return _emit(args, result, f"semantic refresh: embedded={result.get('embedded')} "
-                               f"store={result.get('store_count')}")
+                               f"store={result.get('store_count')}", code=code)
+
+
+def cmd_embed(args: argparse.Namespace) -> int:
+    """Resumable semantic embedding job (foreground, background or status)."""
+    from .intelligence.embedding_job import EmbeddingJob
+
+    db = _active_db(args)
+    job = EmbeddingJob(db)
+
+    if args.status:
+        data = job.status()
+        coverage = data.get("coverage") or {}
+        human = (f"embed status={data.get('status')} running={data.get('running')} "
+                 f"coverage={coverage.get('percent', 0)}% "
+                 f"({coverage.get('embedded', 0)}/{coverage.get('eligible', 0)}) "
+                 f"pending={coverage.get('pending', 0)}")
+        return _emit(args, data, human)
+
+    if args.stop:
+        result = job.request_stop()
+        return _emit(args, result, "embed: stop requested")
+
+    if args.rebuild:
+        # Store loss/corruption or a migrated legacy DB: every tracked vector is
+        # re-embedded from scratch (resumable like any other run).
+        reset = db.reset_semantic_for_rebuild()
+        sys.stderr.write(f"embed: rebuild requested ({reset} row(s) marked dirty)\n")
+
+    if args.background:
+        result = job.start_background(limit=args.limit or None,
+                                      batch_size=args.batch_size)
+        if result.get("started"):
+            human = f"embed: background worker started pid={result.get('pid')} log={result.get('log')}"
+            return _emit(args, result, human)
+        human = f"embed: background start failed ({result.get('reason')})"
+        if result.get("log_tail"):
+            sys.stderr.write(str(result["log_tail"]) + "\n")
+        return _emit(args, result, human, code=2)
+
+    # ``--worker`` runs quietly under the detached parent; otherwise foreground.
+    worker = bool(getattr(args, "worker", False))
+    state = job.run(limit=args.limit or None, batch_size=args.batch_size)
+    coverage = state.coverage or {}
+    code = 0 if state.status == "DONE" else 3 if state.status == "STOPPED" else 2
+    if worker:
+        return code
+    human = (f"embed {state.status}: processed={state.embedded} "
+             f"coverage={coverage.get('percent', 0)}% "
+             f"({coverage.get('embedded', 0)}/{coverage.get('eligible', 0)})")
+    if state.error:
+        human += f" error={state.error}"
+    return _emit(args, asdict(state), human, code=code)
+
+
+def cmd_hashes(args: argparse.Namespace) -> int:
+    """Build exact-content hashes (and optional near-duplicate edges)."""
+    from .dedup import DedupStore, ExactDuplicateEngine, NearDuplicateEngine
+
+    db = _active_db(args)
+    store = DedupStore(db)
+    max_size = None if not args.max_size else int(args.max_size)
+    hashed = ExactDuplicateEngine(db, store).hash_duplicate_candidates(
+        min_size=int(args.min_size),
+        max_size=max_size,
+        scope_prefix=args.scope,
+        include_members=not args.no_members,
+        max_sizes=int(args.max_sizes),
+    )
+    data: dict[str, Any] = {"hashes": hashed, "totals": store.duplicate_totals()}
+    if args.near:
+        data["near"] = NearDuplicateEngine(db, store).build(
+            threshold=float(args.threshold),
+            scope_prefix=args.scope,
+            max_docs=int(args.limit),
+        )
+    human = (f"hashes: hashed={hashed.get('hashed')} ok={hashed.get('ok')} "
+             f"read={hashed.get('bytes_hashed', 0) / 1e9:.2f}GB "
+             f"groups={data['totals'].get('groups')}")
+    return _emit(args, data, human)
+
+
+_DERIVED_STEPS = ("hashes", "intel", "embeddings", "clusters")
+
+
+def cmd_derived(args: argparse.Namespace) -> int:
+    """Build the canonical derived layers in dependency order."""
+    from .dedup import DedupStore, ExactDuplicateEngine
+    from .intel.pipeline import IntelPipeline
+
+    db = _active_db(args)
+    steps = [s.strip() for s in (args.only or ",".join(_DERIVED_STEPS)).split(",") if s.strip()]
+    unknown = [s for s in steps if s not in _DERIVED_STEPS]
+    if unknown:
+        return _err(f"unknown derived step(s): {', '.join(unknown)}")
+    limit = _bound(args.limit)
+    results: dict[str, Any] = {}
+    degraded = False
+
+    if "hashes" in steps:
+        results["hashes"] = ExactDuplicateEngine(db, DedupStore(db)).hash_duplicate_candidates(
+            min_size=int(args.min_size), include_members=True, max_sizes=int(args.max_sizes)
+        )
+    if "intel" in steps:
+        results["intel"] = IntelPipeline(db).run(limit=limit, scope_prefix=args.scope)
+    if "embeddings" in steps:
+        from .intelligence.semantic_search import SemanticSearchEngine
+
+        refreshed = SemanticSearchEngine(db).refresh(
+            batch_size=int(args.batch_size), max_docs=limit
+        )
+        results["embeddings"] = refreshed
+        degraded = degraded or not refreshed.get("available")
+    if "clusters" in steps:
+        from .galaxy import GalaxyError, GalaxyService
+
+        try:
+            results["clusters"] = GalaxyService(db).build_clusters(
+                scope={"kind": "all"}, persist=True
+            )
+        except GalaxyError as exc:
+            results["clusters"] = {"available": False, "error": str(exc)}
+            degraded = True
+
+    human = "\n".join(
+        f"  {name}: " + (f"error={value.get('error')}" if isinstance(value, dict) and value.get("error")
+                         else "ok")
+        for name, value in results.items()
+    ) or "no steps"
+    return _emit(args, {"steps": steps, "results": results, "degraded": degraded},
+                 "derived:\n" + human, code=3 if degraded else 0)
 
 
 def cmd_duplicates(args: argparse.Namespace) -> int:
@@ -352,8 +558,16 @@ def cmd_report(args: argparse.Namespace) -> int:
                                 "sections": len(ir.sections), "sources": len(ir.sources)},
                          f"report build: {len(ir.sections)} sections, "
                          f"{len(ir.sources)} sources")
-        formats = tuple(args.formats.split(",")) if args.formats else (
-            ReportFormat.HTML.value, ReportFormat.JSON.value)
+        requested = args.formats or (
+            f"{ReportFormat.HTML.value},{ReportFormat.JSON.value}")
+        formats = tuple(item.strip().upper() for item in requested.split(",") if item.strip())
+        valid = {fmt.value for fmt in ReportFormat}
+        unknown = [fmt for fmt in formats if fmt not in valid]
+        if unknown or not formats:
+            return _err(
+                f"unknown report format(s): {', '.join(unknown) or '(none)'}; "
+                f"choose from {sorted(valid)}"
+            )
         result = service.generate(definition, formats=formats)
         return _emit(args, {"report_id": definition.report_id,
                             "artifacts": [a.as_dict() for a in result.artifacts],
@@ -398,8 +612,35 @@ def cmd_restore(args: argparse.Namespace) -> int:
                  f"restore {result.status}: {result.error or result.target_db}")
 
 
+def cmd_migrate_data(args: argparse.Namespace) -> int:
+    from .core.paths import migrate_legacy_data
+
+    report = migrate_legacy_data(
+        args.source,
+        move=not args.copy,
+        dry_run=args.dry_run,
+        overwrite=args.overwrite,
+    )
+    status = report.get("status")
+    code = 2 if status in {"FAILED", "PARTIAL"} else 0
+    human = (f"migrate-data {status}: {report.get('source')} -> "
+             f"{report.get('target')} files={report.get('files', 0)} "
+             f"bytes={report.get('bytes', 0)}")
+    if report.get("errors"):
+        human += f" errors={len(report['errors'])}"
+    return _emit(args, report, human, code=code)
+
+
+def _export_db_to_env(args: argparse.Namespace) -> None:
+    """Make the resolved ``--db`` visible to in-process servers/launchers."""
+    if getattr(args, "db", None):
+        os.environ["PIS_DB_PATH"] = _resolved_db_path(args)
+
+
 def cmd_api(args: argparse.Namespace) -> int:
     from .api.app import main as api_main
+
+    _export_db_to_env(args)
     argv = []
     if args.host:
         argv += ["--host", args.host]
@@ -412,6 +653,8 @@ def cmd_api(args: argparse.Namespace) -> int:
 
 def cmd_ui(args: argparse.Namespace) -> int:
     from .launcher import main as launcher_main
+
+    _export_db_to_env(args)
     argv = [args.profile or "full"]
     if args.port:
         argv += ["--port", str(args.port)]
@@ -444,6 +687,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pis", description="36TB Intelligence operations CLI.")
     parser.add_argument("--db", default=None, help="explicit database path (default: PIS_DB_PATH)")
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    parser.add_argument("-v", "--verbose", action="store_true", default=False,
+                        help="verbose stderr logging (DEBUG)")
+    parser.add_argument("-q", "--quiet", action="store_true", default=False,
+                        help="errors only on stderr")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("status", help="aggregate health/status")
@@ -457,7 +704,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("root")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--dry-run", action="store_true")
-    p.set_defaults(func=cmd_scan)
+    p.add_argument(
+        "--strict", dest="ignore_errors", action="store_false",
+        help="fail closed on the first unreadable subtree (default: safe partial scan)",
+    )
+    p.add_argument(
+        "--ignore-errors", dest="ignore_errors", action="store_true",
+        help="record unreadable subtrees and finish COMPLETED_WITH_WARNINGS "
+             "(default; reconciliation skips only those subtrees)",
+    )
+    p.add_argument(
+        "--exclude", dest="exclude_dirs", action="append", default=[],
+        metavar="PATTERN",
+        help="exclude a directory basename/glob or path pattern (repeatable)",
+    )
+    p.add_argument(
+        "--exclude-path", dest="exclude_paths", action="append", default=[],
+        metavar="PATH",
+        help="exclude an absolute path subtree (repeatable)",
+    )
+    p.set_defaults(
+        func=cmd_scan,
+        ignore_errors=os.environ.get("PIS_SCAN_IGNORE_ERRORS", "1").lower()
+        not in {"0", "false", "no"},
+    )
 
     p = sub.add_parser("extract", help="run content extraction")
     p.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
@@ -484,9 +754,50 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--category", default=None)
     p.set_defaults(func=cmd_search)
 
-    p = sub.add_parser("semantic-refresh", help="embed dirty documents into the store")
-    p.add_argument("--limit", type=int, default=256)
+    p = sub.add_parser("semantic-refresh", help="bounded foreground semantic refresh")
+    p.add_argument("--limit", type=int, default=256, help="max documents (default 256)")
+    p.add_argument("--batch-size", dest="batch_size", type=int, default=256)
+    p.add_argument("--all", action="store_true", help="embed every pending document")
     p.set_defaults(func=cmd_semantic_refresh)
+
+    p = sub.add_parser("embed", help="resumable background semantic embedding job")
+    action = p.add_mutually_exclusive_group()
+    action.add_argument("--status", action="store_true",
+                        help="show job state and semantic coverage")
+    action.add_argument("--stop", action="store_true", help="request a clean stop")
+    action.add_argument("--background", action="store_true",
+                        help="start a detached worker (survives the terminal)")
+    action.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--limit", type=int, default=0,
+                   help="max documents for this run (0 = all pending)")
+    p.add_argument("--batch-size", dest="batch_size", type=int, default=256)
+    p.add_argument("--rebuild", action="store_true",
+                   help="re-embed every tracked document from scratch "
+                        "(after store loss, corruption or a legacy migration)")
+    p.set_defaults(func=cmd_embed)
+
+    p = sub.add_parser("hashes", help="build exact content hashes + duplicate groups")
+    p.add_argument("--min-size", dest="min_size", type=int, default=1)
+    p.add_argument("--max-size", dest="max_size", type=int, default=0,
+                   help="max bytes to hash (0 = no upper bound)")
+    p.add_argument("--max-sizes", dest="max_sizes", type=int, default=20000)
+    p.add_argument("--scope", default=None, help="path prefix scope")
+    p.add_argument("--no-members", dest="no_members", action="store_true",
+                   help="physical files only (exclude archive members)")
+    p.add_argument("--near", action="store_true", help="also build near-duplicate edges")
+    p.add_argument("--threshold", type=float, default=0.9)
+    p.add_argument("--limit", type=int, default=5000, help="max docs for --near")
+    p.set_defaults(func=cmd_hashes)
+
+    p = sub.add_parser("derived", help="build derived layers (hashes/intel/embeddings/clusters)")
+    p.add_argument("--only", default=None,
+                   help="comma-separated subset of hashes,intel,embeddings,clusters")
+    p.add_argument("--limit", type=int, default=500)
+    p.add_argument("--batch-size", dest="batch_size", type=int, default=256)
+    p.add_argument("--min-size", dest="min_size", type=int, default=1)
+    p.add_argument("--max-sizes", dest="max_sizes", type=int, default=20000)
+    p.add_argument("--scope", default=None)
+    p.set_defaults(func=cmd_derived)
 
     p = sub.add_parser("duplicates", help="duplicate/version statistics")
     p.add_argument("--limit", type=int, default=20)
@@ -588,24 +899,74 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--allow-remote", action="store_true")
     p.set_defaults(func=cmd_api)
 
+    p = sub.add_parser("migrate-data", help="migrate a legacy ./data tree to XDG")
+    p.add_argument("--from", dest="source", default=None,
+                   help="legacy data directory (default: ./data or repo data/)")
+    p.add_argument("--copy", action="store_true",
+                   help="keep the source tree (default: move after success)")
+    p.add_argument("--overwrite", action="store_true",
+                   help="overwrite existing target files")
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_migrate_data)
+
     p = sub.add_parser("ui", help="launch the canonical Streamlit app")
     p.add_argument("profile", nargs="?", default=None)
     p.add_argument("--port", type=int, default=None)
     p.set_defaults(func=cmd_ui)
 
+    # Accept the global flags after the command too (``pis scan --json``), which
+    # is what operators naturally type. ``SUPPRESS`` keeps the top-level value
+    # when the flag is not repeated.
+    for subparser in sub.choices.values():
+        subparser.add_argument("--db", default=argparse.SUPPRESS,
+                               help="explicit database path (default: PIS_DB_PATH)")
+        subparser.add_argument("--json", action="store_true",
+                               default=argparse.SUPPRESS,
+                               help="emit machine-readable JSON")
+        subparser.add_argument("-v", "--verbose", action="store_true",
+                               default=argparse.SUPPRESS,
+                               help="verbose stderr logging (DEBUG)")
+        subparser.add_argument("-q", "--quiet", action="store_true",
+                               default=argparse.SUPPRESS,
+                               help="errors only on stderr")
+
     return parser
+
+
+def _configure_logging(args: argparse.Namespace) -> None:
+    """Route library logs to stderr; keep stdout machine-readable."""
+    if getattr(args, "verbose", False):
+        level = "DEBUG"
+    elif getattr(args, "quiet", False):
+        level = "ERROR"
+    else:
+        level = os.environ.get("PIS_LOG_LEVEL", "WARNING").upper()
+    def _stderr_sink(message) -> None:  # noqa: ANN001 - loguru message object
+        stream = sys.stderr
+        if stream is None:
+            return
+        try:
+            stream.write(str(message))
+        except (ValueError, OSError):
+            # The stream may belong to a closed test capture; never raise here.
+            pass
+
+    logger.remove()
+    logger.add(_stderr_sink, level=level,
+               format="{level: <8} {name}: {message}")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _configure_logging(args)
     try:
         return int(args.func(args))
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except Exception as exc:  # noqa: BLE001 - CLI reports instead of a bare traceback
         logger.debug(f"CLI error: {type(exc).__name__}: {exc}")
-        return _err(f"{type(exc).__name__}: {exc}", code=1)
+        return _err(f"{type(exc).__name__}: {exc}", code=2)
 
 
 if __name__ == "__main__":  # pragma: no cover - module entrypoint

@@ -17,8 +17,14 @@ from .perf_config import get_resource_config
 
 
 def default_db_path() -> str:
-    """Resolve the configured index DB path (``PIS_DB_PATH`` or default)."""
-    return os.environ.get("PIS_DB_PATH") or "data/indexes/files.db"
+    """Resolve the absolute index DB path (``PIS_DB_PATH`` or XDG default).
+
+    Resolution is absolute and triggers the one-time legacy ``./data``
+    migration when applicable (see :mod:`src.core.paths`).
+    """
+    from .paths import resolve_db_path
+
+    return str(resolve_db_path())
 
 
 # Document kind discriminates physical files from archive members (M009J.3).
@@ -94,11 +100,13 @@ def build_fts_match(query: str) -> Optional[str]:
 
 class DatabaseManager:
     """SQLite database manager for file indexing."""
-    
+
     def __init__(self, db_path: Optional[Path] = None):
         # ``PIS_DB_PATH`` lets tests/acceptance point the application at a
         # temporary database without touching the default repo index.
         self.db_path = Path(db_path) if db_path is not None else Path(default_db_path())
+        if not self.db_path.is_absolute():
+            self.db_path = self.db_path.resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # SQLite owns the WAL/SHM lifecycle. The harness must never unlink
@@ -116,7 +124,7 @@ class DatabaseManager:
         except sqlite3.OperationalError as e:
             if "database is locked" in str(e):
                 logger.warning("Database appears locked, attempting recovery...")
-                
+
                 # Force unlock by trying to open in exclusive mode briefly
                 try:
                     conn = sqlite3.connect(str(self.db_path), timeout=1.0)
@@ -128,12 +136,12 @@ class DatabaseManager:
                     logger.warning("Could not force unlock, will retry with normal timeouts")
             else:
                 raise
-    
+
     def _init_database(self):
         """Initialize database schema with lock checking."""
         # Check for locks first
         self._check_and_unlock_database()
-        
+
         with self.get_connection() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS files (
@@ -155,7 +163,7 @@ class DatabaseManager:
                     depth INTEGER
                 )
             """)
-            
+
             # Create indexes for fast searching
             conn.execute("CREATE INDEX IF NOT EXISTS idx_filename ON files(filename)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_extension ON files(extension)")
@@ -164,7 +172,7 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_size ON files(size_bytes)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_modified ON files(modified_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_parent ON files(parent_dir)")
-            
+
             # Full-text search table + canonical synchronisation triggers
             self._ensure_fts(conn)
 
@@ -191,7 +199,7 @@ class DatabaseManager:
                     metadata TEXT
                 )
             """)
-            
+
             conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
 
@@ -337,6 +345,24 @@ class DatabaseManager:
                 error_message TEXT
             )
         """)
+        # Per-subtree evidence of what a run could NOT exhaustively traverse.
+        # ``kind`` is ``directory|file|filesystem`` for real access errors and
+        # ``excluded`` for intentional/boundary exclusions (user patterns,
+        # nested filesystems). Reconciliation never marks paths below these
+        # scopes MISSING, so a partial scan can be safely reconciled.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS scan_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                path TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'directory',
+                message TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scan_errors_run ON scan_errors(run_id)"
+        )
         volume_columns = {row[1] for row in conn.execute("PRAGMA table_info(volumes)")}
         if "identity_verified" not in volume_columns:
             conn.execute("ALTER TABLE volumes ADD COLUMN identity_verified INTEGER DEFAULT 0")
@@ -646,6 +672,32 @@ class DatabaseManager:
         with self.get_connection() as conn:
             row = conn.execute("SELECT value FROM semantic_meta WHERE key = 'generation'").fetchone()
             return int(row[0]) if row else 0
+
+    def set_semantic_store_dir(self, store_dir: str) -> None:
+        """Record which embedding-store directory this database is bound to.
+
+        The vector store is a global artefact, but a database may be a trial DB
+        while the operator's canonical store lives elsewhere. Recording the
+        directory makes ``maintenance semantic-consistency``/``doctor`` check the
+        store that actually belongs to this database instead of a global guess.
+        """
+        with self.get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO semantic_meta(key, value) VALUES ('store_dir', ?)",
+                (str(store_dir),),
+            )
+            conn.commit()
+
+    def semantic_store_dir(self) -> Optional[str]:
+        """Return the embedding-store directory recorded for this database."""
+        with self.get_connection() as conn:
+            try:
+                row = conn.execute(
+                    "SELECT value FROM semantic_meta WHERE key = 'store_dir'"
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+            return str(row[0]) if row and row[0] else None
 
     @staticmethod
     def _set_semantic_sweep_due_conn(conn, due: bool = True) -> None:
@@ -978,6 +1030,70 @@ class DatabaseManager:
             )
             conn.commit()
 
+    def record_scan_scopes(self, run_id: int, scopes: List[dict]) -> int:
+        """Persist per-subtree errors/exclusions for a run (bounded).
+
+        ``scopes`` come from ``ScanProgress.errors`` and contain ``path``,
+        ``kind`` and ``message``. Duplicate paths are collapsed. Returns the
+        number of rows inserted.
+        """
+        if not scopes:
+            return 0
+        seen: dict[tuple[str, str], str] = {}
+        for entry in scopes:
+            path = str(entry.get("path") or "").rstrip(os.sep) or os.sep
+            kind = str(entry.get("kind") or "directory")
+            message = str(entry.get("message") or "")
+            seen.setdefault((path, kind), message)
+        with self.get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO scan_errors (run_id, path, kind, message) "
+                "VALUES (?, ?, ?, ?)",
+                [(run_id, path, kind, message) for (path, kind), message in seen.items()],
+            )
+            conn.commit()
+        return len(seen)
+
+    def scan_scopes(self, run_id: int) -> List[dict]:
+        """Return the recorded error/exclusion scopes of a run."""
+        with self.get_connection() as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT path, kind, message FROM scan_errors WHERE run_id = ? "
+                    "ORDER BY id", (run_id,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        return [dict(row) for row in rows]
+
+    @staticmethod
+    def _exclusion_clause(
+        column: str, scopes: List[dict]
+    ) -> tuple[str, list]:
+        """Build ``AND NOT (path = ? OR path LIKE ?/% ...)`` for scopes.
+
+        The returned fragment is empty when there is nothing to exclude. Paths
+        are compared exactly and as subtree prefixes; LIKE metacharacters are
+        escaped.
+        """
+        if not scopes:
+            return "", []
+        clauses: list[str] = []
+        params: list = []
+        for scope in scopes:
+            path = str(scope.get("path") or "")
+            if not path:
+                continue
+            escaped = (
+                path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            subtree = escaped.rstrip(os.sep) + os.sep + "%"
+            clauses.append(f"({column} = ? OR {column} LIKE ? ESCAPE '\\')")
+            params.extend([path, subtree])
+        if not clauses:
+            return "", []
+        return "AND NOT (" + " OR ".join(clauses) + ")", params
+
     def fail_scan(self, run_id: int, error_message: Optional[str] = None) -> None:
         """Mark a run FAILED. Never reconciles."""
         self._finish_run(run_id, "FAILED", error_message=error_message)
@@ -1005,10 +1121,15 @@ class DatabaseManager:
             return int(cursor.rowcount)
 
     def complete_scan(self, run_id: int) -> dict:
-        """Mark a run COMPLETED and reconcile its scope (rename + MISSING).
+        """Mark a run COMPLETED (or COMPLETED_WITH_WARNINGS) and reconcile.
 
         Reconciliation only happens for a RUNNING run whose volume is currently
         available; otherwise a ValueError is raised and nothing changes.
+
+        Scopes recorded in ``scan_errors`` (access errors or intentional
+        exclusions) are never reconciled: paths below an unreadable or skipped
+        subtree keep their previous lifecycle state. A run with recorded scopes
+        ends ``COMPLETED_WITH_WARNINGS``.
         """
         with self.get_connection() as conn:
             run = self._run_row(conn, run_id)
@@ -1037,15 +1158,31 @@ class DatabaseManager:
                 self._finish_run(run_id, "FAILED", error_message="volume identity mismatch")
                 raise ValueError("refusing to reconcile: volume identity changed")
 
-        self._finish_run(run_id, "COMPLETED")
+        scopes = self.scan_scopes(run_id)
+        # Beyond this bound, dynamic SQL gets unwieldy and the safest contract is
+        # to skip reconciliation entirely rather than risk marking a live file
+        # MISSING.
+        reconcile = len(scopes) <= 200
+        status = "COMPLETED_WITH_WARNINGS" if scopes else "COMPLETED"
+        self._finish_run(run_id, status)
         with self.get_connection() as conn:
-            renamed = self._associate_renames(conn, run_id)
-            missing = self._mark_missing(conn, run_id)
+            if reconcile:
+                renamed = self._associate_renames(conn, run_id, scopes)
+                missing = self._mark_missing(conn, run_id, scopes)
+            else:
+                renamed = missing = 0
             # Lifecycle changes may invalidate semantic vectors; reconcile once
             # before the next semantic refresh (keeps hot queries O(1)).
             self._set_semantic_sweep_due_conn(conn, True)
             conn.commit()
-        return {"run_id": run_id, "renamed": renamed, "missing": missing}
+        return {
+            "run_id": run_id,
+            "renamed": renamed,
+            "missing": missing,
+            "status": status,
+            "scopes": len(scopes),
+            "reconciled": reconcile,
+        }
 
     @staticmethod
     def _like_scope(root: str) -> str:
@@ -1056,16 +1193,18 @@ class DatabaseManager:
     def _scope_clause(cls, column: str) -> str:
         return f"({column} = ? OR {column} LIKE ? ESCAPE '\\')"
 
-    def _mark_missing(self, conn, run_id: int) -> int:
+    def _mark_missing(self, conn, run_id: int, scopes: Optional[List[dict]] = None) -> int:
         run = self._run_row(conn, run_id)
         root = run["root_path"]
+        exclusion, exclusion_params = self._exclusion_clause("path", scopes or [])
         cursor = conn.execute(
             f"""UPDATE files SET state = 'MISSING'
                 WHERE volume_id = ?
                   AND state = 'ACTIVE'
                   AND (last_seen_scan_id IS NULL OR last_seen_scan_id != ?)
+                  {exclusion}
                   AND {self._scope_clause('path')}""",
-            (run["volume_id"], run_id, root, self._like_scope(root)),
+            (run["volume_id"], run_id, *exclusion_params, root, self._like_scope(root)),
         )
         # Cascade: a deleted/vanished archive container must not leave its
         # virtual members ACTIVE, or they would surface as stale search hits.
@@ -1083,10 +1222,13 @@ class DatabaseManager:
                 break
         return int(cursor.rowcount)
 
-    def _associate_renames(self, conn, run_id: int) -> int:
+    def _associate_renames(
+        self, conn, run_id: int, scopes: Optional[List[dict]] = None
+    ) -> int:
         run = self._run_row(conn, run_id)
         root = run["root_path"]
         like = self._like_scope(root)
+        exclusion, exclusion_params = self._exclusion_clause("old.path", scopes or [])
         rows = conn.execute(
             f"""SELECT old.id AS old_id, new.id AS new_id, new.path AS new_path
                 FROM files AS old
@@ -1103,9 +1245,10 @@ class DatabaseManager:
                   AND (old.last_seen_scan_id IS NULL OR old.last_seen_scan_id != ?)
                   AND old.device_id IS NOT NULL
                   AND old.inode IS NOT NULL
+                  {exclusion}
                   AND {self._scope_clause('old.path')}
                   AND {self._scope_clause('new.path')}""",
-            (run_id, run["volume_id"], run_id, root, like, root, like),
+            (run_id, run["volume_id"], run_id, *exclusion_params, root, like, root, like),
         ).fetchall()
         if not rows:
             return 0
@@ -1142,17 +1285,17 @@ class DatabaseManager:
     def get_connection(self, timeout=30.0, max_retries=3):
         """Get database connection with timeout and retry logic."""
         # time already imported at module level
-        
+
         for attempt in range(max_retries):
             try:
                 # Use timeout and WAL mode for better concurrency
                 conn = sqlite3.connect(
-                    str(self.db_path), 
+                    str(self.db_path),
                     timeout=timeout,
                     isolation_level="DEFERRED"  # Safe transaction mode
                 )
                 conn.row_factory = sqlite3.Row
-                
+
                 # Enable WAL mode for better concurrent access
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout
@@ -1165,13 +1308,13 @@ class DatabaseManager:
                 conn.execute("PRAGMA temp_store=MEMORY")
                 if cfg.db_mmap_mb > 0:
                     conn.execute(f"PRAGMA mmap_size={cfg.db_mmap_mb * 1024 * 1024}")
-                
+
                 try:
                     yield conn
                     break  # Success, exit retry loop
                 finally:
                     conn.close()
-                    
+
             except sqlite3.OperationalError as e:
                 if "database is locked" in str(e) and attempt < max_retries - 1:
                     logger.warning(f"Database locked, retry {attempt + 1}/{max_retries} in 1s...")
@@ -1180,7 +1323,7 @@ class DatabaseManager:
                 else:
                     logger.error(f"Database error after {attempt + 1} attempts: {e}")
                     raise
-    
+
     # Invariant: absence of a path during an unqualified (partial, cancelled or
     # volume-disconnected) scan is NOT proof of deletion. Deletion/rename/move
     # reconciliation is intentionally not implemented here and belongs to a
@@ -1252,7 +1395,7 @@ class DatabaseManager:
                 "SELECT id FROM files WHERE path = ?", (str(file_info.path),)
             ).fetchone()
             return int(row[0]) if row else int(cursor.lastrowid)
-    
+
     def save_files_batch(self, files: List[FileInfo], batch_size: int = 1000, *,
                          volume_id: Optional[int] = None,
                          scan_id: Optional[int] = None) -> int:
@@ -1339,7 +1482,7 @@ class DatabaseManager:
 
         logger.info(f"Total files upserted: {total_saved:,}")
         return total_saved
-    
+
     def _build_filter_conditions(
         self,
         file_type: Optional[FileType],
@@ -1515,13 +1658,13 @@ class DatabaseManager:
                 logger.warning(f"FTS search failed, falling back to LIKE: {exc}")
 
             return self._search_files_like(conn, query, conditions, params, limit)
-    
+
     def get_statistics(self) -> Dict[str, Any]:
         """Get database statistics with error handling."""
         try:
             with self.get_connection() as conn:
                 stats = {}
-                
+
                 # Total files and size
                 cursor = conn.execute("""
                     SELECT COUNT(*), SUM(size_bytes) FROM files
@@ -1530,7 +1673,7 @@ class DatabaseManager:
                 stats['total_files'] = count or 0
                 stats['total_bytes'] = total_size or 0
                 stats['total_gb'] = (total_size or 0) / (1024**3)
-                
+
                 # Files by type
                 cursor = conn.execute("""
                     SELECT file_type, COUNT(*) as count
@@ -1538,7 +1681,7 @@ class DatabaseManager:
                     ORDER BY count DESC
                 """)
                 stats['by_type'] = {row[0]: row[1] for row in cursor}
-                
+
                 # Files by priority
                 cursor = conn.execute("""
                     SELECT priority, COUNT(*) as count
@@ -1546,18 +1689,18 @@ class DatabaseManager:
                     ORDER BY count DESC
                 """)
                 stats['by_priority'] = {row[0]: row[1] for row in cursor}
-                
+
                 # Top extensions
                 cursor = conn.execute("""
                     SELECT extension, COUNT(*) as count
-                    FROM files 
+                    FROM files
                     WHERE extension IS NOT NULL
                     GROUP BY extension
                     ORDER BY count DESC
                     LIMIT 10
                 """)
                 stats['top_extensions'] = [(row[0], row[1]) for row in cursor]
-                
+
                 # Largest files
                 cursor = conn.execute("""
                     SELECT filename, size_bytes, path
@@ -1569,9 +1712,9 @@ class DatabaseManager:
                     {'filename': row[0], 'size_mb': row[1]/(1024*1024), 'path': row[2]}
                     for row in cursor
                 ]
-                
+
                 return stats
-        
+
         except Exception as e:
             logger.error(f"Database statistics error: {e}")
             # Return minimal stats on database corruption
@@ -1584,7 +1727,7 @@ class DatabaseManager:
                 'top_extensions': [],
                 'largest_files': []
             }
-    
+
     @staticmethod
     def _safe_text(text: str) -> str:
         """Return UTF-8-persistable text.
@@ -1606,11 +1749,11 @@ class DatabaseManager:
         content = self._safe_text(content)
         with self.get_connection() as conn:
             conn.execute("""
-                UPDATE files 
+                UPDATE files
                 SET content_text = ?, content_extracted = 1, indexed_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (content, file_id))
-            
+
             # The AFTER UPDATE trigger keeps files_fts synchronised.
             self._mark_semantic_dirty_conn(conn, [file_id])
             conn.commit()
@@ -1623,7 +1766,7 @@ class DatabaseManager:
                 (file_id,),
             )
             conn.commit()
-    
+
     def get_unprocessed_documents(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Get documents that need content extraction."""
         with self.get_connection() as conn:
@@ -1635,9 +1778,9 @@ class DatabaseManager:
                 ORDER BY priority DESC, size_bytes ASC
                 LIMIT ?
             """, (EXTRACTION_LIMIT, limit))
-            
+
             return [dict(row) for row in cursor]
-    
+
     def save_scan_stats(self, stats: Dict[str, Any]) -> None:
         """Save scan statistics."""
         with self.get_connection() as conn:
@@ -1658,11 +1801,11 @@ class DatabaseManager:
                 json.dumps(stats.get('metadata', {}))
             ))
             conn.commit()
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get database stats (alias for get_statistics)."""
         return self.get_statistics()
-    
+
     def get_recent_files(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recently modified files."""
         with self.get_connection() as conn:
@@ -1671,5 +1814,5 @@ class DatabaseManager:
                 ORDER BY modified_at DESC
                 LIMIT ?
             """, (limit,))
-            
+
             return [dict(row) for row in cursor]

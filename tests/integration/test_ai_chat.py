@@ -6,11 +6,11 @@ sys.path.append(str(Path(__file__).parent))
 
 def test_ai_integration():
     """Test complet de l'intégration AI."""
-    
+
     print("=" * 50)
     print("    TEST INTEGRATION AI CHAT COMPLET")
     print("=" * 50)
-    
+
     # Test 1: Imports
     print("\n[1/4] Test des imports...")
     try:
@@ -20,7 +20,7 @@ def test_ai_integration():
     except Exception as e:
         print(f"    ✗ Erreur imports: {e}")
         return False
-    
+
     # Test 2: Initialisation
     print("\n[2/4] Test d'initialisation...")
     try:
@@ -30,7 +30,7 @@ def test_ai_integration():
     except Exception as e:
         print(f"    ✗ Erreur init: {e}")
         return False
-    
+
     # Test 3: Disponibilité Ollama
     print("\n[3/4] Test disponibilité Ollama...")
     try:
@@ -44,21 +44,21 @@ def test_ai_integration():
             print("    Lancez: validate_ollama.bat")
     except Exception as e:
         print(f"    ✗ Erreur test Ollama: {e}")
-    
+
     # Test 4: Interface Streamlit
     print("\n[4/4] Test interface Streamlit...")
     try:
         with open("src/ui/app.py", "r", encoding="utf-8") as f:
             content = f.read()
-            
+
         if "def ai_chat_page" in content and "ChatEngine" in content:
             print("    ✓ Interface AI Chat intégrée")
         else:
             print("    ✗ Interface AI Chat manquante")
-            
+
     except Exception as e:
         print(f"    ✗ Erreur interface: {e}")
-    
+
     print("\n" + "=" * 50)
     print("             PROCHAINES ÉTAPES")
     print("=" * 50)

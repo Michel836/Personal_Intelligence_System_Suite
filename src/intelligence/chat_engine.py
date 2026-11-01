@@ -56,7 +56,7 @@ def _llm_num_predict() -> int:
 
 class ChatEngine:
     """Conversational AI engine for document interaction."""
-    
+
     def __init__(
         self,
         model_name: Optional[str] = None,
@@ -82,9 +82,9 @@ class ChatEngine:
         self.simple_fallback = SimpleChatEngine(self.db)
         if not self._llm.is_available():
             logger.info("No LLM provider available - SimpleChatEngine will answer")
-        
+
         # System prompt
-        self.system_prompt = """You are an intelligent assistant for a personal document management system called "36TB Intelligence". 
+        self.system_prompt = """You are an intelligent assistant for a personal document management system called "36TB Intelligence".
 
 You help users find and understand information from their 36TB collection of personal documents, files, and data spanning from 2010 to present.
 
@@ -102,7 +102,7 @@ Guidelines:
 - Always cite the source documents when providing information
 - Use French when the user speaks French, English otherwise
 """
-        
+
     def is_available(self) -> bool:
         """Check if conversational AI is available."""
         # Always return True since we have SimpleChatEngine as fallback
@@ -143,12 +143,12 @@ Guidelines:
             }
         except Exception as exc:  # noqa: BLE001
             return {"available": False, "current_model": None, "error": str(exc)}
-    
+
     def _test_ollama_connection(self) -> bool:
         """Test if Ollama is actually accessible."""
         if not OLLAMA_AVAILABLE:
             return False
-        
+
         try:
             # Test with timeout
             response = ollama.list()
@@ -156,7 +156,7 @@ Guidelines:
         except Exception as e:
             logger.debug(f"Ollama connection test failed: {e}")
             return False
-    
+
     def _check_model_availability(self) -> bool:
         """Check if the specified model is available."""
         try:
@@ -171,7 +171,7 @@ Guidelines:
                     name = getattr(model, "model", None) or getattr(model, "name", None)
                 if name:
                     available_models.append(name)
-            
+
             if self.model_name in available_models:
                 logger.info(f"Model {self.model_name} is available")
                 return True
@@ -184,21 +184,21 @@ Guidelines:
                         logger.info(f"Using fallback model: {fallback}")
                         self.model_name = fallback
                         return True
-                
+
                 logger.error("No compatible models found")
                 return False
-        
+
         except Exception as e:
             logger.error(f"Error checking Ollama models: {e}")
             return False
-    
+
     @safe_ai_operation
     @timeout_operation(float(os.environ.get("PIS_LLM_CHAT_TIMEOUT", "90")))  # large local models need headroom
     def chat(self, user_message: str, search_context: bool = True) -> Dict[str, Any]:
         """Have a conversation with the AI about documents."""
-        
+
         start_time = time.time()
-        
+
         try:
             llm, include_content = self._select_llm_for_content()
             if not llm.is_available():
@@ -234,17 +234,17 @@ Guidelines:
                 "num_ctx": _llm_num_ctx(),
             })
             ai_response = result.text
-            
+
             # Update conversation history
             self.conversation_history.append({"role": "user", "content": user_message})
             self.conversation_history.append({"role": "assistant", "content": ai_response})
-            
+
             # Keep conversation history reasonable length
             if len(self.conversation_history) > 20:
                 self.conversation_history = self.conversation_history[-20:]
-            
+
             response_time = time.time() - start_time
-            
+
             return {
                 "response": ai_response,
                 "sources": context_documents,
@@ -253,7 +253,7 @@ Guidelines:
                 "provider": result.provider,
                 "context_used": len(context_documents) > 0
             }
-        
+
         except Exception as e:
             logger.error(f"Error in chat: {e}")
             # Provider failure (e.g. missing model, outage): degrade to the
@@ -265,14 +265,14 @@ Guidelines:
                 "error": "provider_unavailable",
                 "sources": [],
             }
-    
+
     def _search_relevant_documents(
-        self, 
-        query: str, 
+        self,
+        query: str,
         max_docs: int = 5
     ) -> List[Dict[str, Any]]:
         """Search for documents relevant to the query."""
-        
+
         try:
             # Try semantic search first
             if self.semantic_search.is_available():
@@ -281,21 +281,21 @@ Guidelines:
                     limit=max_docs,
                     similarity_threshold=0.3
                 )
-                
+
                 if results:
                     return results
-            
+
             # Fallback to regular search
             results = self.db.search_files(query=query, limit=max_docs)
             return results
-        
+
         except Exception as e:
             logger.error(f"Error searching documents: {e}")
             return []
-    
+
     def _build_context(
-        self, 
-        user_message: str, 
+        self,
+        user_message: str,
         documents: List[Dict[str, Any]],
         include_content: bool = True,
     ) -> str:
@@ -305,59 +305,59 @@ Guidelines:
         remote provider under a metadata-only policy) only filenames/paths and
         metadata are included.
         """
-        
+
         context = f"User question: {user_message}\n\n"
-        
+
         if documents:
             context += "Relevant documents from the user's collection:\n\n"
-            
+
             for i, doc in enumerate(documents, 1):
                 context += f"Document {i}:\n"
                 context += f"- Filename: {doc.get('filename', 'Unknown')}\n"
                 context += f"- Path: {doc.get('path', 'Unknown')}\n"
                 context += f"- Type: {doc.get('file_type', 'unknown')}\n"
                 context += f"- Size: {doc.get('size_bytes', 0) / (1024*1024):.2f} MB\n"
-                
+
                 if include_content and doc.get('content_text'):
                     # Include a relevant excerpt
                     content = doc['content_text']
                     if len(content) > 500:
                         content = content[:500] + "..."
                     context += f"- Content excerpt: {content}\n"
-                
+
                 if 'semantic_similarity' in doc:
                     context += f"- Relevance: {doc['semantic_similarity']:.3f}\n"
-                
+
                 context += "\n"
-            
+
             context += "Based on these documents, please answer the user's question.\n"
             context += "Always mention specific filenames when referencing information.\n\n"
         else:
             context += "No specific documents found. Provide general guidance or suggest search terms.\n\n"
-        
+
         return context
-    
+
     def ask_about_document(self, document_id: int, question: str) -> Dict[str, Any]:
         """Ask a specific question about a particular document."""
-        
+
         # Use simple fallback if Ollama not available
         if self.simple_fallback:
             return self.simple_fallback.ask_about_document(document_id, question)
-        
+
         # Get the document
         with self.db.get_connection() as conn:
             cursor = conn.execute("SELECT * FROM files WHERE id = ?", (document_id,))
             doc = cursor.fetchone()
-            
+
             if not doc:
                 return {
                     "response": "Document not found.",
                     "error": "Document not found",
                     "sources": []
                 }
-        
+
         doc_dict = dict(doc)
-        
+
         # Build specific context for this document
         context = f"Question about document '{doc_dict['filename']}':\n{question}\n\n"
         context += f"Document details:\n"
@@ -365,21 +365,21 @@ Guidelines:
         context += f"- Path: {doc_dict['path']}\n"
         context += f"- Type: {doc_dict['file_type']}\n"
         context += f"- Size: {doc_dict['size_bytes'] / (1024*1024):.2f} MB\n"
-        
+
         if doc_dict.get('content_text'):
             context += f"- Full content:\n{doc_dict['content_text']}\n"
-        
+
         context += f"\nPlease answer the question based on this document."
-        
+
         return self.chat(context, search_context=False)
-    
+
     def summarize_documents(self, file_type: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
         """Generate a summary of documents in the collection."""
-        
+
         # Use simple fallback if Ollama not available
         if self.simple_fallback:
             return self.simple_fallback.summarize_documents(file_type, limit)
-        
+
         # Get documents to summarize
         if file_type:
             from .models import FileType
@@ -389,48 +389,48 @@ Guidelines:
             )
         else:
             documents = self.db.search_files(limit=limit)
-        
+
         if not documents:
             return {
                 "response": "No documents found to summarize.",
                 "sources": []
             }
-        
+
         # Build summary request
         context = f"Please provide a summary of these {len(documents)} documents:\n\n"
-        
+
         for i, doc in enumerate(documents, 1):
             context += f"{i}. {doc['filename']}\n"
             context += f"   Type: {doc['file_type']}\n"
             context += f"   Size: {doc['size_bytes'] / (1024*1024):.2f} MB\n"
-            
+
             if doc.get('content_text'):
                 # Include brief content
                 content = doc['content_text'][:200] + "..." if len(doc['content_text']) > 200 else doc['content_text']
                 context += f"   Content: {content}\n"
-            
+
             context += "\n"
-        
+
         context += "Provide an organized summary focusing on:\n"
         context += "- Main topics and themes\n"
         context += "- Document types and purposes\n"
         context += "- Any notable patterns or insights\n"
-        
+
         return self.chat(context, search_context=False)
-    
+
     def clear_conversation(self):
         """Clear conversation history."""
         if self.simple_fallback:
             self.simple_fallback.clear_conversation()
         self.conversation_history = []
         logger.info("Conversation history cleared")
-    
+
     def get_conversation_history(self) -> List[Dict[str, str]]:
         """Get current conversation history."""
         if self.simple_fallback:
             return self.simple_fallback.get_conversation_history()
         return self.conversation_history.copy()
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get chat engine statistics."""
         if self.simple_fallback:

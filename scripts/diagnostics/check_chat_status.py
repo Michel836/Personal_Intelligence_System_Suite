@@ -26,26 +26,26 @@ print("\n2. Chat Engine:")
 try:
     from src.intelligence.chat_engine import ChatEngine
     from src.core.database import DatabaseManager
-    
+
     db = DatabaseManager()
     chat = ChatEngine(db=db)
-    
+
     if chat.is_available():
         print("   [OK] Chat disponible")
         stats = chat.get_stats()
-        
+
         if 'mode' in stats:
             print(f"   Mode: {stats['mode']}")
         else:
             print(f"   Modèle: {stats.get('model', 'Unknown')}")
-        
+
         if chat.simple_fallback:
             print("   [OK] Fallback actif (sans Ollama)")
         else:
             print("   [OK] Ollama actif")
     else:
         print("   [X] Chat non disponible")
-        
+
 except Exception as e:
     print(f"   [X] Erreur: {e}")
 
@@ -53,18 +53,18 @@ except Exception as e:
 print("\n3. Capacités de recherche:")
 try:
     from src.intelligence.semantic_search import SemanticSearchEngine
-    
+
     semantic = SemanticSearchEngine(db)
     if semantic.is_available():
         print("   [OK] Recherche sémantique disponible")
     else:
         print("   [!] Recherche sémantique limitée")
         print("   -> pip install sentence-transformers")
-    
+
     # Test recherche normale
     results = db.search_files(query="test", limit=1)
     print(f"   [OK] Recherche normale: {len(results)} résultats")
-    
+
 except Exception as e:
     print(f"   [X] Erreur: {e}")
 

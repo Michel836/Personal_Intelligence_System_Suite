@@ -11,12 +11,37 @@ Note: ``FileInfo`` belongs to the scanner model and does **not** carry
 """
 from __future__ import annotations
 
+import atexit
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# Global isolation: tests must never read or write the operator's real data.
+# These variables are set at import time (before any ``src.*`` module is
+# imported by a test module) and point every XDG default at a session temp dir.
+# Individual tests may still override them with ``monkeypatch.setenv``.
+# ---------------------------------------------------------------------------
+_TEST_ROOT = Path(tempfile.mkdtemp(prefix="pis-tests-"))
+os.environ["PIS_DATA_DIR"] = str(_TEST_ROOT / "data")
+os.environ["PIS_CACHE_DIR"] = str(_TEST_ROOT / "cache")
+os.environ["PIS_STATE_DIR"] = str(_TEST_ROOT / "state")
+os.environ["PIS_EMBEDDING_STORE_DIR"] = str(_TEST_ROOT / "embeddings")
+os.environ["PIS_EXPORT_DIR"] = str(_TEST_ROOT / "exports")
+os.environ["PIS_BACKUP_DIR"] = str(_TEST_ROOT / "backups")
+os.environ["PIS_NO_AUTO_MIGRATE"] = "1"
+os.environ.pop("PIS_DB_PATH", None)
+
+
+@atexit.register
+def _cleanup_test_root() -> None:
+    shutil.rmtree(_TEST_ROOT, ignore_errors=True)
 
 from src.scanner.models import FileInfo, FileType, Priority
 

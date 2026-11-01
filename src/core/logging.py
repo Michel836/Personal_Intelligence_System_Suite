@@ -8,10 +8,10 @@ from .simple_config import settings
 
 def setup_logging() -> None:
     """Configure logging with loguru."""
-    
+
     # Remove default handler
     logger.remove()
-    
+
     # Console handler
     log_format = (
         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -19,7 +19,7 @@ def setup_logging() -> None:
         "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
         "<level>{message}</level>"
     )
-    
+
     logger.add(
         sys.stderr,
         format=log_format,
@@ -28,11 +28,11 @@ def setup_logging() -> None:
         backtrace=True,
         diagnose=True,
     )
-    
+
     # File handler
     log_file = settings.data_dir / "logs" / "app.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    
+
     logger.add(
         log_file,
         format=log_format,
@@ -43,7 +43,7 @@ def setup_logging() -> None:
         backtrace=True,
         diagnose=True,
     )
-    
+
     # Performance logs (if enabled)
     if settings.profile_performance:
         perf_log = settings.data_dir / "logs" / "performance.log"
@@ -54,7 +54,7 @@ def setup_logging() -> None:
             filter=lambda record: "PERF" in record["message"],
             rotation="10 MB",
         )
-    
+
     logger.info("Logging configured successfully")
     logger.debug(f"Log level: {settings.log_level}")
     logger.debug(f"Log file: {log_file}")
@@ -65,16 +65,16 @@ def log_performance(func_name: str = None):
     """Decorator to log function performance."""
     import time
     import functools
-    
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             if not settings.profile_performance:
                 return func(*args, **kwargs)
-            
+
             name = func_name or f"{func.__module__}.{func.__name__}"
             start_time = time.time()
-            
+
             try:
                 result = func(*args, **kwargs)
                 execution_time = time.time() - start_time
@@ -84,6 +84,6 @@ def log_performance(func_name: str = None):
                 execution_time = time.time() - start_time
                 logger.error(f"PERF | {name} | FAILED after {execution_time:.3f}s | {e}")
                 raise
-        
+
         return wrapper
     return decorator

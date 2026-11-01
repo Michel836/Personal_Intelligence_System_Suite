@@ -1,131 +1,52 @@
-# 🚀 36TB Intelligence - System Status
+# 36TB Intelligence — System Status
 
-## ✅ **System Operational**
+**Version:** `1.0.0rc1` · **Status:** functional MVP (Linux, mono-user, local-first)
+**Last validated:** 2026-11-01
 
-All ergonomic improvements have been successfully implemented and deployed!
+## Where the project stands
 
----
+| Area | State |
+|---|---|
+| Core engine (scan, SQLite/FTS, extraction, ops) | ✅ MVP-ready |
+| Intelligence (intel, duplicates, graph, reports, galaxy) | ✅ Implemented and tested; real-corpus evidence in [`REAL_CORPUS.md`](REAL_CORPUS.md) |
+| CLI / API / backup / doctor | ✅ MVP-ready |
+| UI (one canonical Streamlit app, 20 pages) | ✅ Functional; legacy Modern UI removed |
+| Packaging / install | ✅ Wheel + constrained install validated on a clean venv |
+| Quality gates | ✅ Budgeted ruff/mypy gate (no regressions; ratcheting) |
+| Real 36 TB scale | ⚠️ Not yet demonstrated (15k files / 614 embedded docs validated) |
 
-## 🌐 **Access URLs**
+## Canonical surfaces (there is only one of each)
 
-### 🎯 **Primary Launcher**
-**http://localhost:8500**
-- Choose between Classic and Modern interfaces
-- System status monitoring
-- Interface selection with animations
+* **App:** `src/ui/app.py`, launched with `python -m src.launcher --profile lite|smart|full`
+* **CLI:** `pis` (`status`, `scan`, `extract`, `search`, `embed`, `hashes`, `derived`, `report`, `backup`, …)
+* **API:** loopback only (`pis api`, `http://127.0.0.1:8600/api/v1`)
+* **Database:** SQLite at `~/.local/share/pis/indexes/files.db` (override with `PIS_DB_PATH`)
+* **Vector store:** NumPy matrix at `~/.local/share/pis/cache/embeddings`
+* **Exports / backups:** `~/.pis-exports` / `~/.pis-backups`
 
-### ⚡ **Classic Interface** 
-**http://localhost:8501**
-- Original functional interface
-- All core features available
-- Lightweight and fast
+## Quick verification
 
-### ✨ **Modern Interface**
-**http://localhost:8503** 
-- Revolutionary UX with all ergonomic improvements
-- Interactive onboarding for new users
-- Advanced dashboard and navigation
+```bash
+pis status                 # files, semantic coverage, policy, resolved DB
+pis doctor                 # actionable diagnostics
+pis embed --status         # resumable embedding job + coverage
+python scripts/quality_gate.py
+python -m pytest -q
+```
 
----
+## Known limits
 
-## 🎯 **Available Features**
+* Linux-first; Windows/macOS not part of the validated MVP.
+* 36 TB / multi-million-document scale is designed for but not yet measured.
+* PST/OST need external tools; OCR is opt-in.
+* PostgreSQL/pgvector is optional and unexercised.
+* Mono-user: the loopback API has no auth/TLS.
 
-### 🏠 **Modern Interface Highlights**
-- ✅ **Unified Dashboard** - Smart widgets and insights
-- ✅ **Interactive Onboarding** - 6-step guided tour
-- ✅ **Global Search** - Always visible with suggestions
-- ✅ **Contextual Navigation** - Breadcrumbs and shortcuts
-- ✅ **File Cards System** - Visual previews and actions
-- ✅ **Quick Actions** - Floating buttons for common tasks
-- ✅ **Dark/Light Themes** - Adaptive design
-- ✅ **Workspace Management** - Save working environments
-- ✅ **AI Intelligence** - Smart recommendations
-- ✅ **Performance Feedback** - Real-time notifications
+## Documentation
 
-### 🔧 **System Components**
-- ✅ **Database**: SQLite with 10,000+ files indexed
-- ✅ **AI Engine**: Ollama with llama3.2:latest
-- ✅ **Embeddings**: Semantic search ready
-- ✅ **Visualizations**: Plotly + NetworkX available
-- ✅ **File Scanner**: Fast parallel scanning
-- ✅ **Content Extraction**: 48+ file formats
-- ✅ **Cloud Sync**: Dropbox integration
-
----
-
-## 🚀 **Getting Started**
-
-### 👤 **New Users**
-1. Visit **http://localhost:8500**
-2. Click **"✨ Launch Modern"**
-3. Complete the interactive onboarding
-4. Explore all features!
-
-### 💼 **Returning Users**
-- **Classic**: http://localhost:8501 (familiar interface)
-- **Modern**: http://localhost:8503 (enhanced experience)
-- **Switch**: Use launcher to try both interfaces
-
----
-
-## 📊 **System Health**
-
-### ✅ **Running Services**
-- 🟢 Launcher (Port 8500)
-- 🟢 Classic Interface (Port 8501) 
-- 🟢 Modern Interface (Port 8503)
-- 🟢 Ollama AI (Port 11434)
-- 🟢 Database (SQLite)
-
-### 🔧 **Technical Status**
-- 🟢 All imports resolved
-- 🟢 FastScanner API corrected
-- 🟢 UI components functional
-- 🟢 Onboarding flow active
-- 🟢 No blocking errors
-
----
-
-## 🎉 **Ergonomic Revolution Complete**
-
-The 36TB Intelligence system now provides:
-
-🌟 **Revolutionary User Experience**
-- Modern, intuitive interface design
-- AI-powered intelligent workflows
-- Contextual navigation and shortcuts
-- Real-time performance feedback
-
-🚀 **Enhanced Productivity**
-- Quick actions for common tasks
-- Template-based searches
-- Bulk operations on files
-- Workspace-based organization
-
-🎨 **Beautiful Design**
-- Gradient backgrounds and animations
-- Dark/Light theme support
-- Responsive mobile-friendly layouts
-- Accessibility-focused interactions
-
-🤖 **Intelligent Features**
-- Smart file recommendations
-- Auto-tagging capabilities
-- Duplicate detection
-- Usage pattern analysis
-
----
-
-## 🎯 **Next Steps**
-
-1. **Explore the Modern Interface** at http://localhost:8503
-2. **Complete the Onboarding** for full feature tour
-3. **Try Advanced Search** with filters and suggestions
-4. **Check Visualizations** for data insights
-5. **Configure Workspaces** for different projects
-
----
-
-**🚀 Your personal knowledge operating system is now ready with revolutionary ergonomics!**
-
-*Last updated: September 2025 - All systems operational*
+* [`RELEASE_NOTES.md`](RELEASE_NOTES.md) — capabilities and known limitations
+* [`RELEASE_CANDIDATE.md`](RELEASE_CANDIDATE.md) — install and operate
+* [`REAL_CORPUS.md`](REAL_CORPUS.md) — instrumented real-corpus run
+* [`ACCEPTANCE_NEW_USER.md`](ACCEPTANCE_NEW_USER.md) — fresh-install acceptance
+* [`VALIDATION_PROTOCOL.md`](VALIDATION_PROTOCOL.md) — quality gates
+* [`history/`](history/) — superseded documents (traceability only)

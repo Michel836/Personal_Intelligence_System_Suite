@@ -25,6 +25,8 @@ a corrupt store and safely rebuilt.
 """
 from __future__ import annotations
 
+from ..core.paths import embeddings_dir as _default_embeddings_dir
+
 import json
 import os
 from dataclasses import dataclass, field
@@ -71,7 +73,7 @@ class EmbeddingMatrixStore:
         self.model_key = model_key
         self.model_name = model_name
         self.dim = int(dim)
-        self.base_dir = Path(base_dir) if base_dir else Path("data/cache/embeddings")
+        self.base_dir = Path(base_dir) if base_dir else _default_embeddings_dir()
         self.dir = self.base_dir / model_key
         self.matrix: Optional[np.ndarray] = None
         self.meta: Optional[StoreMeta] = None

@@ -11,6 +11,8 @@ from loguru import logger
 
 from ..core.perf_config import get_resource_config
 
+from ..core.paths import embeddings_dir as _default_embeddings_dir
+
 try:
     from sentence_transformers import SentenceTransformer
     SENTENCE_TRANSFORMERS_AVAILABLE = True
@@ -58,7 +60,7 @@ def resolve_model_key(model_name: Optional[str] = None) -> str:
 
 class EmbeddingGenerator:
     """Generate embeddings for semantic search."""
-    
+
     def __init__(self, model_name: Optional[str] = None):
         self.model_key = resolve_model_key(model_name)
         self.model_name = EMBEDDING_MODELS[self.model_key]["hf"]
@@ -70,29 +72,29 @@ class EmbeddingGenerator:
         # Cache namespaced by model so vectors from different spaces never mix.
         # Honour an explicit path so trials/tests never write into the repo.
         cache_base = os.environ.get("PIS_EMBEDDING_CACHE_DIR")
-        self.cache_dir = (Path(cache_base) if cache_base else Path("data/cache/embeddings")) / self.model_key
+        self.cache_dir = (Path(cache_base) if cache_base else _default_embeddings_dir()) / self.model_key
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         if SENTENCE_TRANSFORMERS_AVAILABLE:
             self._load_model()
         else:
             logger.error("sentence-transformers not installed. Install with: pip install sentence-transformers")
-    
+
     def _load_model(self) -> bool:
         """Load the embedding model."""
         try:
             logger.info(f"Loading embedding model: {self.model_name}")
             self.model = SentenceTransformer(self.model_name)
             self._maybe_half()
-            
+
             # Test embedding to get dimension
             test_embedding = self._encode_with_fallback(["test"], batch_size=1)
             self.embedding_dim = int(len(test_embedding[0]))
             self._write_model_metadata()
-            
+
             logger.info(f"Model loaded successfully. Embedding dimension: {self.embedding_dim}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to load embedding model: {e}")
             self.model = None
@@ -179,7 +181,7 @@ class EmbeddingGenerator:
                     len(texts), batch, next_batch,
                 )
                 batch = next_batch
-    
+
     def _write_model_metadata(self) -> None:
         """Persist model provenance next to its embedding cache."""
         try:
@@ -197,28 +199,28 @@ class EmbeddingGenerator:
     def is_available(self) -> bool:
         """Check if embedding generation is available."""
         return self.model is not None
-    
+
     def generate_embedding(self, text: str) -> Optional[np.ndarray]:
         """Generate embedding for a single text."""
         if not self.is_available():
             return None
-        
+
         try:
             # Clean and prepare text
             text = self._prepare_text(text)
             if not text:
                 return None
-            
+
             # Generate embedding
             embedding = self._encode_with_fallback([text], batch_size=1)[0]
             return embedding.astype(np.float32)  # Save memory
-            
+
         except Exception as e:
             logger.debug(f"Error generating embedding: {e}")
             return None
-    
+
     def generate_batch_embeddings(
-        self, 
+        self,
         texts: List[str],
         batch_size: int = 32,
         show_progress: bool = True
@@ -226,24 +228,24 @@ class EmbeddingGenerator:
         """Generate embeddings for multiple texts."""
         if not self.is_available():
             return [None] * len(texts)
-        
+
         logger.info(f"Generating embeddings for {len(texts)} texts")
-        
+
         # Prepare texts
         prepared_texts = [self._prepare_text(text) for text in texts]
-        
+
         # Filter out empty texts but keep track of indices
         valid_texts = []
         valid_indices = []
-        
+
         for i, text in enumerate(prepared_texts):
             if text:
                 valid_texts.append(text)
                 valid_indices.append(i)
-        
+
         if not valid_texts:
             return [None] * len(texts)
-        
+
         # Generate embeddings in batches
         embeddings = []
 
@@ -264,28 +266,28 @@ class EmbeddingGenerator:
 
         logger.info(f"Generated {len(embeddings)} embeddings successfully")
         return result
-    
+
     def _prepare_text(self, text: str) -> str:
         """Clean and prepare text for embedding."""
         if not text:
             return ""
-        
+
         # Basic cleaning
         text = text.strip()
-        
+
         # Truncate very long texts (models have token limits)
         max_chars = 8000  # Conservative limit
         if len(text) > max_chars:
             text = text[:max_chars]
-        
+
         # Remove excessive whitespace
         text = " ".join(text.split())
-        
+
         return text
-    
+
     def compute_similarity(
-        self, 
-        embedding1: np.ndarray, 
+        self,
+        embedding1: np.ndarray,
         embedding2: np.ndarray
     ) -> float:
         """Compute cosine similarity between two embeddings."""
@@ -293,18 +295,18 @@ class EmbeddingGenerator:
             # Normalize embeddings
             norm1 = np.linalg.norm(embedding1)
             norm2 = np.linalg.norm(embedding2)
-            
+
             if norm1 == 0 or norm2 == 0:
                 return 0.0
-            
+
             # Cosine similarity
             similarity = np.dot(embedding1, embedding2) / (norm1 * norm2)
             return float(similarity)
-            
+
         except Exception as e:
             logger.debug(f"Error computing similarity: {e}")
             return 0.0
-    
+
     def find_similar(
         self,
         query_embedding: np.ndarray,
@@ -365,7 +367,7 @@ class EmbeddingGenerator:
         # lexsort: last key is primary -> (-similarity, index) ascending.
         order = np.lexsort((index_array, -similarities))[:k]
         return [(int(index_array[j]), float(similarities[j])) for j in order]
-    
+
     def save_embedding_cache(self, cache_key: str, embedding: np.ndarray) -> None:
         """Save embedding to cache."""
         try:
@@ -373,7 +375,7 @@ class EmbeddingGenerator:
             np.save(cache_file, embedding)
         except Exception as e:
             logger.debug(f"Error saving embedding cache: {e}")
-    
+
     def load_embedding_cache(self, cache_key: str) -> Optional[np.ndarray]:
         """Load embedding from cache."""
         try:
@@ -382,9 +384,9 @@ class EmbeddingGenerator:
                 return np.load(cache_file)
         except Exception as e:
             logger.debug(f"Error loading embedding cache: {e}")
-        
+
         return None
-    
+
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the loaded model."""
         return {

@@ -20,20 +20,20 @@ except ImportError:
 
 class AdvancedAI:
     """Advanced AI system for document analysis and summaries."""
-    
+
     def __init__(self, db_path=None, ollama_url: str = "http://localhost:11434"):
         from ..core.database import default_db_path
         self.db_path = db_path or default_db_path()
         self.ollama_url = ollama_url
         self.model = "llama3.2:latest"
         self._init_ai_tables()
-    
+
     def _init_ai_tables(self):
         """Initialize AI-related tables."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             # Summaries table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS summaries (
@@ -51,7 +51,7 @@ class AdvancedAI:
                     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
                 )
             """)
-            
+
             # Document insights table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS document_insights (
@@ -64,7 +64,7 @@ class AdvancedAI:
                     FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
                 )
             """)
-            
+
             # Q&A history table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS qa_history (
@@ -78,20 +78,20 @@ class AdvancedAI:
                     feedback TEXT DEFAULT ''
                 )
             """)
-            
+
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_summaries_file_id ON summaries(file_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_insights_file_id ON document_insights(file_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_insights_type ON document_insights(insight_type)")
-            
+
             conn.commit()
             conn.close()
-            
+
             logger.info("Advanced AI tables initialized")
-            
+
         except Exception as e:
             logger.error(f"Error initializing AI tables: {e}")
-    
+
     def is_ollama_available(self) -> bool:
         """Whether a chat LLM provider is available (local Ollama or remote)."""
         try:
@@ -132,40 +132,40 @@ class AdvancedAI:
         except Exception as exc:  # noqa: BLE001
             logger.error(f"Error making AI request: {exc}")
             return None
-    
+
     # Document Summarization
     def generate_summary(self, file_id: int, force_regenerate: bool = False) -> Optional[Dict[str, Any]]:
         """Generate or retrieve AI summary for a document."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             # Get file info
             cursor.execute("""
-                SELECT filename, content_text, file_type 
-                FROM files 
+                SELECT filename, content_text, file_type
+                FROM files
                 WHERE id = ? AND (content_text IS NOT NULL AND content_text != '')
             """, (file_id,))
-            
+
             file_data = cursor.fetchone()
             if not file_data:
                 conn.close()
                 return None
-            
+
             filename, content, file_type = file_data
-            
+
             # Calculate content hash
             content_hash = hashlib.md5(content.encode()).hexdigest()
-            
+
             # Check if summary already exists and is current
             if not force_regenerate:
                 cursor.execute("""
-                    SELECT summary_text, key_points, topics, sentiment, 
+                    SELECT summary_text, key_points, topics, sentiment,
                            created_at, confidence_score
-                    FROM summaries 
+                    FROM summaries
                     WHERE file_id = ? AND content_hash = ?
                 """, (file_id, content_hash))
-                
+
                 existing = cursor.fetchone()
                 if existing:
                     conn.close()
@@ -178,18 +178,18 @@ class AdvancedAI:
                         'confidence': existing[5],
                         'from_cache': True
                     }
-            
+
             # Generate new summary
             summary_data = self._generate_document_summary(content, filename, file_type)
-            
+
             if not summary_data:
                 conn.close()
                 return None
-            
+
             # Save summary to database
             cursor.execute("""
-                INSERT OR REPLACE INTO summaries 
-                (file_id, summary_text, key_points, topics, sentiment, 
+                INSERT OR REPLACE INTO summaries
+                (file_id, summary_text, key_points, topics, sentiment,
                  summary_length, content_hash, model_used, confidence_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
@@ -203,17 +203,17 @@ class AdvancedAI:
                 self.model,
                 summary_data['confidence']
             ))
-            
+
             conn.commit()
             conn.close()
-            
+
             summary_data['from_cache'] = False
             return summary_data
-            
+
         except Exception as e:
             logger.error(f"Error generating summary: {e}")
             return None
-    
+
     def _generate_document_summary(self, content: str, filename: str, file_type: str) -> Optional[Dict[str, Any]]:
         """Use AI to generate document summary and analysis."""
         # Truncate content if too long
@@ -221,12 +221,12 @@ class AdvancedAI:
         truncated_content = content[:max_content_length]
         if len(content) > max_content_length:
             truncated_content += "\\n\\n[Content truncated for analysis]"
-        
+
         system_prompt = f"""You are an expert document analyzer. Analyze the provided document and provide a comprehensive summary.
-        
+
         Document type: {file_type}
         Document name: {filename}
-        
+
         Provide your response in this exact JSON format:
         {{
             "summary": "A concise 2-3 paragraph summary of the main content",
@@ -235,52 +235,52 @@ class AdvancedAI:
             "sentiment": "positive/negative/neutral",
             "confidence": 0.85
         }}
-        
+
         Make sure the summary captures the essence of the document, key points are actionable insights, and topics are relevant categories."""
-        
+
         prompt = f"Analyze this document:\\n\\n{truncated_content}"
-        
+
         response = self._make_ollama_request(prompt, system_prompt, max_tokens=1500)
-        
+
         if not response:
             return None
-        
+
         try:
             # Extract JSON from response (handle potential formatting issues)
             json_match = re.search(r'\\{.*\\}', response, re.DOTALL)
             if json_match:
                 json_str = json_match.group()
                 result = json.loads(json_str)
-                
+
                 # Validate required fields
                 required_fields = ['summary', 'key_points', 'topics', 'sentiment', 'confidence']
                 if all(field in result for field in required_fields):
                     return result
                 else:
                     logger.warning("AI response missing required fields")
-                    
+
             # Fallback: parse manually if JSON parsing fails
             return self._manual_summary_parsing(response, content)
-            
+
         except json.JSONDecodeError:
             logger.warning("Failed to parse AI JSON response, using manual parsing")
             return self._manual_summary_parsing(response, content)
-    
+
     def _manual_summary_parsing(self, response: str, content: str) -> Dict[str, Any]:
         """Manual parsing fallback for summary generation."""
         # Basic fallback summary
         lines = content.split('\\n')
         first_paragraph = ' '.join(lines[:3])[:300] + "..."
-        
+
         # Extract some basic keywords
         words = re.findall(r'\\b\\w{4,}\\b', content.lower())
         word_freq = {}
         for word in words:
             word_freq[word] = word_freq.get(word, 0) + 1
-        
+
         top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:5]
         topics = [word for word, count in top_words if count > 2]
-        
+
         return {
             'summary': first_paragraph,
             'key_points': [f"Document contains {len(lines)} lines of content"],
@@ -288,24 +288,24 @@ class AdvancedAI:
             'sentiment': 'neutral',
             'confidence': 0.5
         }
-    
+
     def get_summary(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Get existing summary for a file."""
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
+
             cursor.execute("""
                 SELECT s.*, f.filename
                 FROM summaries s
                 JOIN files f ON s.file_id = f.id
                 WHERE s.file_id = ?
             """, (file_id,))
-            
+
             result = cursor.fetchone()
             conn.close()
-            
+
             if result:
                 return {
                     'summary': result['summary_text'],
@@ -316,28 +316,28 @@ class AdvancedAI:
                     'confidence': result['confidence_score'],
                     'filename': result['filename']
                 }
-            
+
             return None
-            
+
         except Exception as e:
             logger.error(f"Error getting summary: {e}")
             return None
-    
+
     def batch_generate_summaries(self, limit: int = 50, file_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """Generate summaries for multiple files in batch."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             # Build query conditions
             conditions = ["content_text IS NOT NULL", "content_text != ''"]
             params = []
-            
+
             if file_types:
                 placeholders = ','.join('?' * len(file_types))
                 conditions.append(f"file_type IN ({placeholders})")
                 params.extend(file_types)
-            
+
             # Get files without summaries
             query = f"""
                 SELECT f.id, f.filename, f.file_type
@@ -348,26 +348,26 @@ class AdvancedAI:
                 LIMIT ?
             """
             params.append(limit)
-            
+
             cursor.execute(query, params)
             files_to_process = cursor.fetchall()
-            
+
             conn.close()
-            
+
             if not files_to_process:
                 return {'processed': 0, 'successful': 0, 'failed': 0, 'details': []}
-            
+
             results = {'processed': 0, 'successful': 0, 'failed': 0, 'details': []}
-            
+
             for file_data in files_to_process:
                 file_id, filename, file_type = file_data
-                
+
                 logger.info(f"Generating summary for: {filename}")
-                
+
                 try:
                     summary = self.generate_summary(file_id)
                     results['processed'] += 1
-                    
+
                     if summary:
                         results['successful'] += 1
                         results['details'].append({
@@ -385,7 +385,7 @@ class AdvancedAI:
                             'success': False,
                             'error': 'Failed to generate summary'
                         })
-                        
+
                 except Exception as e:
                     results['failed'] += 1
                     results['details'].append({
@@ -394,25 +394,25 @@ class AdvancedAI:
                         'success': False,
                         'error': str(e)
                     })
-            
+
             return results
-            
+
         except Exception as e:
             logger.error(f"Error in batch summary generation: {e}")
             return {'processed': 0, 'successful': 0, 'failed': 0, 'error': str(e)}
-    
+
     # Intelligent Q&A
-    def ask_question(self, question: str, context_files: Optional[List[int]] = None, 
+    def ask_question(self, question: str, context_files: Optional[List[int]] = None,
                     max_context_files: int = 5) -> Dict[str, Any]:
         """Ask a question about documents with AI assistance."""
         try:
             # If no specific files provided, find relevant ones
             if not context_files:
                 context_files = self._find_relevant_files(question, max_context_files)
-            
+
             # Get content from context files
             context_content = self._get_files_content(context_files[:max_context_files])
-            
+
             if not context_content:
                 return {
                     'success': False,
@@ -420,14 +420,14 @@ class AdvancedAI:
                     'answer': '',
                     'context_files': []
                 }
-            
+
             # Generate answer using AI
             answer = self._generate_answer(question, context_content)
-            
+
             if answer:
                 # Save Q&A to history
                 self._save_qa_history(question, answer, context_files)
-                
+
                 return {
                     'success': True,
                     'answer': answer,
@@ -441,7 +441,7 @@ class AdvancedAI:
                     'answer': '',
                     'context_files': context_files
                 }
-                
+
         except Exception as e:
             logger.error(f"Error in ask_question: {e}")
             return {
@@ -450,16 +450,16 @@ class AdvancedAI:
                 'answer': '',
                 'context_files': []
             }
-    
+
     def _find_relevant_files(self, question: str, limit: int) -> List[int]:
         """Find files relevant to the question."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             # Simple keyword-based search in content and summaries
             question_words = re.findall(r'\\b\\w{3,}\\b', question.lower())
-            
+
             if not question_words:
                 # Fallback to recent files with content
                 cursor.execute("""
@@ -473,7 +473,7 @@ class AdvancedAI:
                 search_pattern = '%' + '%'.join(question_words) + '%'
                 cursor.execute("""
                     SELECT DISTINCT f.id,
-                           CASE 
+                           CASE
                                WHEN f.content_text LIKE ? THEN 2
                                WHEN s.summary_text LIKE ? THEN 1
                                ELSE 0
@@ -484,26 +484,26 @@ class AdvancedAI:
                     ORDER BY relevance_score DESC, f.modified_at DESC
                     LIMIT ?
                 """, (search_pattern, search_pattern, search_pattern, search_pattern, limit))
-            
+
             results = cursor.fetchall()
             conn.close()
-            
+
             return [row[0] for row in results]
-            
+
         except Exception as e:
             logger.error(f"Error finding relevant files: {e}")
             return []
-    
+
     def _get_files_content(self, file_ids: List[int]) -> List[Dict[str, Any]]:
         """Get content and metadata for specified files."""
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
+
             if not file_ids:
                 return []
-            
+
             placeholders = ','.join('?' * len(file_ids))
             cursor.execute(f"""
                 SELECT f.id, f.filename, f.file_type, f.content_text,
@@ -513,12 +513,12 @@ class AdvancedAI:
                 WHERE f.id IN ({placeholders})
                 AND f.content_text IS NOT NULL AND f.content_text != ''
             """, file_ids)
-            
+
             results = []
             for row in cursor.fetchall():
                 # Limit content length for AI processing
                 content = row['content_text'][:3000] if row['content_text'] else ''
-                
+
                 results.append({
                     'id': row['id'],
                     'filename': row['filename'],
@@ -526,80 +526,80 @@ class AdvancedAI:
                     'content': content,
                     'summary': row['summary_text'] or ''
                 })
-            
+
             conn.close()
             return results
-            
+
         except Exception as e:
             logger.error(f"Error getting files content: {e}")
             return []
-    
+
     def _generate_answer(self, question: str, context_files: List[Dict[str, Any]]) -> Optional[str]:
         """Generate answer using AI based on context files."""
         # Build context from files
         context_parts = []
         for file_info in context_files:
             context_part = f"File: {file_info['filename']} ({file_info['file_type']})\\n"
-            
+
             if file_info['summary']:
                 context_part += f"Summary: {file_info['summary']}\\n"
-            
+
             if file_info['content']:
                 context_part += f"Content: {file_info['content'][:1500]}\\n"
-            
+
             context_parts.append(context_part)
-        
+
         full_context = "\\n\\n---\\n\\n".join(context_parts)
-        
+
         system_prompt = """You are an intelligent document assistant. Answer questions based on the provided document context.
-        
+
         Guidelines:
         - Base your answer on the provided documents
         - Be specific and cite relevant information
         - If information is not available in the documents, say so
         - Provide helpful and accurate responses
         - Keep answers concise but comprehensive"""
-        
+
         prompt = f"""Context Documents:
 {full_context}
 
 Question: {question}
 
 Answer:"""
-        
+
         return self._make_ollama_request(prompt, system_prompt, max_tokens=800)
-    
+
     def _save_qa_history(self, question: str, answer: str, context_files: List[int]):
         """Save Q&A to history."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             cursor.execute("""
                 INSERT INTO qa_history (question, answer, context_files, model_used)
                 VALUES (?, ?, ?, ?)
             """, (question, answer, json.dumps(context_files), self.model))
-            
+
             conn.commit()
             conn.close()
-            
+
         except Exception as e:
             logger.error(f"Error saving Q&A history: {e}")
-    
+
     def get_qa_history(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Get recent Q&A history."""
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
+
             cursor.execute("""
                 SELECT question, answer, context_files, created_at, rating, feedback
                 FROM qa_history
                 ORDER BY created_at DESC
                 LIMIT ?
             """, (limit,))
-            
+
             results = []
             for row in cursor.fetchall():
                 results.append({
@@ -610,26 +610,26 @@ Answer:"""
                     'rating': row['rating'],
                     'feedback': row['feedback']
                 })
-            
+
             conn.close()
             return results
-            
+
         except Exception as e:
             logger.error(f"Error getting Q&A history: {e}")
             return []
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """Get AI system statistics."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             stats = {}
-            
+
             # Summary stats
             cursor.execute("SELECT COUNT(*) FROM summaries")
             stats['total_summaries'] = cursor.fetchone()[0]
-            
+
             cursor.execute("""
                 SELECT COUNT(*) FROM files f
                 LEFT JOIN summaries s ON f.id = s.file_id
@@ -637,22 +637,22 @@ Answer:"""
                 AND s.id IS NULL
             """)
             stats['files_without_summaries'] = cursor.fetchone()[0]
-            
+
             # Q&A stats
             cursor.execute("SELECT COUNT(*) FROM qa_history")
             stats['total_questions'] = cursor.fetchone()[0]
-            
+
             # Average confidence
             cursor.execute("SELECT AVG(confidence_score) FROM summaries WHERE confidence_score > 0")
             result = cursor.fetchone()[0]
             stats['avg_summary_confidence'] = result or 0.0
-            
+
             # Top topics
             cursor.execute("""
-                SELECT topics FROM summaries 
+                SELECT topics FROM summaries
                 WHERE topics IS NOT NULL AND topics != ''
             """)
-            
+
             all_topics = []
             for row in cursor.fetchall():
                 try:
@@ -660,42 +660,42 @@ Answer:"""
                     all_topics.extend(topics)
                 except:
                     continue
-            
+
             # Count topic frequency
             topic_counts = {}
             for topic in all_topics:
                 topic_counts[topic] = topic_counts.get(topic, 0) + 1
-            
+
             # Top 10 topics
             top_topics = sorted(topic_counts.items(), key=lambda x: x[1], reverse=True)[:10]
             stats['top_topics'] = dict(top_topics)
-            
+
             conn.close()
-            
+
             # System status
             stats['ollama_available'] = self.is_ollama_available()
             stats['model_used'] = self.model
-            
+
             return stats
-            
+
         except Exception as e:
             logger.error(f"Error getting AI stats: {e}")
             return {}
-    
+
     def delete_summary(self, file_id: int) -> bool:
         """Delete summary for a file."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             cursor.execute("DELETE FROM summaries WHERE file_id = ?", (file_id,))
             success = cursor.rowcount > 0
-            
+
             conn.commit()
             conn.close()
-            
+
             return success
-            
+
         except Exception as e:
             logger.error(f"Error deleting summary: {e}")
             return False

@@ -18,23 +18,23 @@ from .simple_config import settings
 
 class StructuredLogger:
     """Enhanced structured logger with context and debugging features."""
-    
+
     def __init__(self):
         self.context = threading.local()
         self.configured = False
-    
+
     def configure(self):
         """Configure advanced logging system."""
         if self.configured:
             return
-        
+
         # Remove default handler
         logger.remove()
-        
+
         # Create logs directory
         log_dir = settings.data_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Console handler with enhanced formatting
         console_format = (
             "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
@@ -43,7 +43,7 @@ class StructuredLogger:
             "<blue>{name}</blue>:<blue>{function}</blue>:<blue>{line}</blue> | "
             "<level>{message}</level>"
         )
-        
+
         logger.add(
             sys.stderr,
             format=console_format,
@@ -52,7 +52,7 @@ class StructuredLogger:
             backtrace=True,
             diagnose=True
         )
-        
+
         # Main application log
         logger.add(
             log_dir / "app.log",
@@ -64,7 +64,7 @@ class StructuredLogger:
             backtrace=True,
             diagnose=True
         )
-        
+
         # Error log (errors and critical only)
         logger.add(
             log_dir / "errors.log",
@@ -76,7 +76,7 @@ class StructuredLogger:
             backtrace=True,
             diagnose=True
         )
-        
+
         # Performance log (structured JSON)
         logger.add(
             log_dir / "performance.jsonl",
@@ -87,7 +87,7 @@ class StructuredLogger:
             retention="7 days",
             compression="gz"
         )
-        
+
         # Audit log (sensitive operations)
         logger.add(
             log_dir / "audit.log",
@@ -98,7 +98,7 @@ class StructuredLogger:
             retention="365 days",  # Keep audit logs for 1 year
             compression="gz"
         )
-        
+
         # Debug log (verbose debugging info)
         if settings.log_level == "DEBUG":
             logger.add(
@@ -111,10 +111,10 @@ class StructuredLogger:
                 backtrace=True,
                 diagnose=True
             )
-        
+
         self.configured = True
         logger.info("Advanced logging system configured")
-    
+
     def _json_formatter(self, record):
         """Format log record as JSON for structured logging."""
         json_record = {
@@ -127,23 +127,23 @@ class StructuredLogger:
             "line": record["line"],
             "message": record["message"]
         }
-        
+
         # Add extra fields
         for key, value in record["extra"].items():
             json_record[key] = value
-        
+
         return json.dumps(json_record)
-    
+
     def set_context(self, **kwargs):
         """Set logging context for current thread."""
         if not hasattr(self.context, 'data'):
             self.context.data = {}
         self.context.data.update(kwargs)
-    
+
     def get_context(self) -> Dict[str, Any]:
         """Get current logging context."""
         return getattr(self.context, 'data', {})
-    
+
     def clear_context(self):
         """Clear logging context."""
         if hasattr(self.context, 'data'):
@@ -168,7 +168,7 @@ def log_performance_advanced(func_name: str, duration: float, **kwargs):
         "timestamp": datetime.now().isoformat(),
         **kwargs
     }
-    
+
     logger.bind(**perf_data).info(f"Performance: {func_name} took {duration:.3f}s")
 
 
@@ -182,7 +182,7 @@ def log_audit(action: str, resource: str = None, user: str = None, **kwargs):
         "timestamp": datetime.now().isoformat(),
         **kwargs
     }
-    
+
     logger.bind(**audit_data).info(f"AUDIT: {action} on {resource or 'unknown'} by {user or 'system'}")
 
 
@@ -193,7 +193,7 @@ def debug_log(message: str, **kwargs):
         "context": json.dumps(context),
         **kwargs
     }
-    
+
     logger.bind(**debug_data).debug(message)
 
 
@@ -203,17 +203,17 @@ def trace_calls(include_args: bool = False, include_result: bool = False):
         @wraps(func)
         def wrapper(*args, **kwargs):
             func_name = f"{func.__module__}.{func.__qualname__}"
-            
+
             # Log function entry
             entry_data = {"trace": True, "event": "enter", "function": func_name}
-            
+
             if include_args:
                 try:
                     # Get function signature
                     sig = inspect.signature(func)
                     bound_args = sig.bind(*args, **kwargs)
                     bound_args.apply_defaults()
-                    
+
                     # Sanitize arguments (remove sensitive data)
                     sanitized_args = {}
                     for name, value in bound_args.arguments.items():
@@ -221,18 +221,18 @@ def trace_calls(include_args: bool = False, include_result: bool = False):
                             sanitized_args[name] = "***REDACTED***"
                         else:
                             sanitized_args[name] = repr(value)[:100]  # Limit length
-                    
+
                     entry_data["arguments"] = sanitized_args
                 except Exception:
                     entry_data["arguments"] = "Unable to capture arguments"
-            
+
             logger.bind(**entry_data).debug(f"TRACE: Entering {func_name}")
-            
+
             start_time = datetime.now()
-            
+
             try:
                 result = func(*args, **kwargs)
-                
+
                 # Log function exit
                 duration = (datetime.now() - start_time).total_seconds()
                 exit_data = {
@@ -242,14 +242,14 @@ def trace_calls(include_args: bool = False, include_result: bool = False):
                     "duration_seconds": duration,
                     "success": True
                 }
-                
+
                 if include_result and result is not None:
                     exit_data["result"] = repr(result)[:200]  # Limit length
-                
+
                 logger.bind(**exit_data).debug(f"TRACE: Exiting {func_name} (took {duration:.3f}s)")
-                
+
                 return result
-                
+
             except Exception as e:
                 # Log function exception
                 duration = (datetime.now() - start_time).total_seconds()
@@ -263,10 +263,10 @@ def trace_calls(include_args: bool = False, include_result: bool = False):
                     "exception_message": str(e),
                     "traceback": traceback.format_exc()
                 }
-                
+
                 logger.bind(**error_data).error(f"TRACE: Exception in {func_name} after {duration:.3f}s: {e}")
                 raise
-        
+
         return wrapper
     return decorator
 
@@ -279,9 +279,9 @@ def performance_monitor(threshold_seconds: float = 1.0):
             start_time = datetime.now()
             result = func(*args, **kwargs)
             duration = (datetime.now() - start_time).total_seconds()
-            
+
             func_name = f"{func.__module__}.{func.__qualname__}"
-            
+
             if duration > threshold_seconds:
                 logger.warning(
                     f"SLOW OPERATION: {func_name} took {duration:.3f}s (threshold: {threshold_seconds}s)",
@@ -293,9 +293,9 @@ def performance_monitor(threshold_seconds: float = 1.0):
                 )
             else:
                 log_performance_advanced(func_name, duration)
-            
+
             return result
-        
+
         return wrapper
     return decorator
 
@@ -309,7 +309,7 @@ def error_handler(reraise: bool = True, log_level: str = "ERROR"):
                 return func(*args, **kwargs)
             except Exception as e:
                 func_name = f"{func.__module__}.{func.__qualname__}"
-                
+
                 error_data = {
                     "error_handler": True,
                     "function": func_name,
@@ -318,35 +318,35 @@ def error_handler(reraise: bool = True, log_level: str = "ERROR"):
                     "traceback": traceback.format_exc(),
                     "context": structured_logger.get_context()
                 }
-                
+
                 if log_level == "ERROR":
                     logger.bind(**error_data).error(f"ERROR in {func_name}: {e}")
                 elif log_level == "WARNING":
                     logger.bind(**error_data).warning(f"WARNING in {func_name}: {e}")
                 else:
                     logger.bind(**error_data).info(f"HANDLED EXCEPTION in {func_name}: {e}")
-                
+
                 if reraise:
                     raise
                 else:
                     return None
-        
+
         return wrapper
     return decorator
 
 
 class LogContext:
     """Context manager for adding temporary logging context."""
-    
+
     def __init__(self, **kwargs):
         self.context = kwargs
         self.previous_context = None
-    
+
     def __enter__(self):
         self.previous_context = structured_logger.get_context().copy()
         structured_logger.set_context(**self.context)
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         structured_logger.clear_context()
         if self.previous_context:
@@ -371,10 +371,10 @@ def log_file_operation(operation: str, file_path: str, success: bool = True, err
     """Log file operations."""
     level = "info" if success else "error"
     message = f"File {operation}: {file_path}"
-    
+
     if not success and error:
         message += f" - Error: {error}"
-    
+
     logger.bind(
         audit=True,
         action=f"file_{operation}",

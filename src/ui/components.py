@@ -9,7 +9,7 @@ from pathlib import Path
 
 class UIComponents:
     """Advanced UI components with modern ergonomics."""
-    
+
     @staticmethod
     def global_search_bar(placeholder: str = "🔍 Search across 36TB...", key: str = "global_search"):
         """Global search bar with keyboard shortcuts."""
@@ -47,7 +47,7 @@ class UIComponents:
         }
         </style>
         """, unsafe_allow_html=True)
-        
+
         with st.container():
             st.markdown('<div class="global-search">', unsafe_allow_html=True)
             col1, col2 = st.columns([4, 1])
@@ -61,7 +61,7 @@ class UIComponents:
             with col2:
                 st.markdown('<span class="search-shortcut">Ctrl+K</span>', unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
-        
+
         return search_query
 
     @staticmethod
@@ -97,7 +97,7 @@ class UIComponents:
         .sync-btn { background: linear-gradient(135deg, #4facfe, #00f2fe); color: white; }
         </style>
         """, unsafe_allow_html=True)
-        
+
         col1, col2, col3 = st.columns([1, 1, 1])
         with col1:
             if st.button("🚀", help="Quick Scan", key=f"{key_prefix}_quick_scan"):
@@ -115,12 +115,12 @@ class UIComponents:
         """Modern status indicator."""
         status_colors = {
             "success": "#28a745",
-            "warning": "#ffc107", 
+            "warning": "#ffc107",
             "error": "#dc3545",
             "info": "#17a2b8",
             "loading": "#6c757d"
         }
-        
+
         color = status_colors.get(status, "#6c757d")
         st.markdown(f"""
         <div style="display: flex; align-items: center; padding: 8px 12px; background: {color}20; border-left: 4px solid {color}; border-radius: 4px; margin: 5px 0;">
@@ -137,7 +137,7 @@ class UIComponents:
         file_size = file_info.get('size_bytes', 0)
         file_type = file_info.get('file_type', 'unknown')
         modified = file_info.get('modified_at', '')
-        
+
         # File type icons
         type_icons = {
             'pdf': '📄', 'doc': '📝', 'docx': '📝', 'txt': '📄',
@@ -147,10 +147,10 @@ class UIComponents:
             'py': '🐍', 'js': '🟨', 'html': '🌐', 'css': '🎨',
             'zip': '📦', 'rar': '📦', '7z': '📦'
         }
-        
+
         icon = type_icons.get(file_type.lower(), '📄')
         size_str = UIComponents.format_file_size(file_size)
-        
+
         st.markdown(f"""<div style="border: 1px solid #e0e0e0; border-radius: 12px; padding: 16px; margin: 8px 0; background: white; box-shadow: 0 2px 8px rgba(0,0,0,0.1); transition: all 0.3s ease; cursor: pointer;" onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 15px rgba(0,0,0,0.15)'" onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 2px 8px rgba(0,0,0,0.1)'"><div style="display: flex; align-items: center; gap: 12px;"><div style="font-size: 32px;">{icon}</div><div style="flex-grow: 1;"><div style="font-weight: 600; color: #333; margin-bottom: 4px;">{file_name}</div><div style="font-size: 12px; color: #666;">{size_str} • {file_type.upper()} • {modified}</div><div style="font-size: 11px; color: #999; margin-top: 2px;">{file_path}</div></div></div></div>""", unsafe_allow_html=True)
 
     @staticmethod
@@ -158,14 +158,14 @@ class UIComponents:
         """Format file size in human readable format."""
         if size_bytes == 0:
             return "0 B"
-        
+
         size_names = ["B", "KB", "MB", "GB", "TB"]
         i = 0
         size = float(size_bytes)
         while size >= 1024.0 and i < len(size_names) - 1:
             size /= 1024.0
             i += 1
-        
+
         return f"{size:.1f} {size_names[i]}"
 
     @staticmethod
@@ -178,7 +178,7 @@ class UIComponents:
         """Breadcrumb navigation component."""
         if not path_items:
             return
-            
+
         st.markdown("""
         <style>
         .breadcrumb {
@@ -202,7 +202,7 @@ class UIComponents:
         }
         </style>
         """, unsafe_allow_html=True)
-        
+
         breadcrumb_html = '<div class="breadcrumb">'
         for i, item in enumerate(path_items):
             if i > 0:
@@ -212,7 +212,7 @@ class UIComponents:
             else:
                 breadcrumb_html += f'<span class="breadcrumb-item">{item}</span>'
         breadcrumb_html += '</div>'
-        
+
         st.markdown(breadcrumb_html, unsafe_allow_html=True)
 
     @staticmethod
@@ -245,7 +245,7 @@ class UIComponents:
         }
         </style>
         """, unsafe_allow_html=True)
-        
+
         for filter_name, options in filters.items():
             st.write(f"**{filter_name}**")
             cols = st.columns(len(options))
@@ -253,7 +253,7 @@ class UIComponents:
                 with cols[i]:
                     if st.button(option, key=f"filter_{filter_name}_{option}"):
                         active_filters[filter_name] = option
-        
+
         return active_filters
 
     @staticmethod
@@ -261,10 +261,10 @@ class UIComponents:
         """Dark/Light mode toggle."""
         if 'dark_mode' not in st.session_state:
             st.session_state.dark_mode = False
-        
+
         if st.button("🌓", help="Toggle Dark/Light Mode"):
             st.session_state.dark_mode = not st.session_state.dark_mode
-        
+
         if st.session_state.dark_mode:
             st.markdown("""
             <style>
@@ -300,7 +300,7 @@ class UIComponents:
             "></div>
             <div style="color: #666; font-weight: 500;">{message}</div>
         </div>
-        
+
         <style>
         @keyframes spin {{
             0% {{ transform: rotate(0deg); }}
@@ -316,11 +316,13 @@ class UIComponents:
 
 class WorkspaceManager:
     """Manage user workspaces and preferences."""
-    
+
     def __init__(self):
-        self.workspace_file = Path("data/workspace.json")
-        self.workspace_file.parent.mkdir(exist_ok=True)
-        
+        from ..core.paths import data_dir
+
+        self.workspace_file = data_dir() / "workspace.json"
+        self.workspace_file.parent.mkdir(parents=True, exist_ok=True)
+
     def save_workspace(self, name: str, config: Dict[str, Any]):
         """Save workspace configuration."""
         workspaces = self.load_workspaces()
@@ -329,21 +331,21 @@ class WorkspaceManager:
             'created_at': datetime.now().isoformat(),
             'last_used': datetime.now().isoformat()
         }
-        
+
         with open(self.workspace_file, 'w') as f:
             json.dump(workspaces, f, indent=2)
-    
+
     def load_workspaces(self) -> Dict[str, Any]:
         """Load all workspaces."""
         if not self.workspace_file.exists():
             return {}
-        
+
         try:
             with open(self.workspace_file, 'r') as f:
                 return json.load(f)
         except:
             return {}
-    
+
     def delete_workspace(self, name: str):
         """Delete a workspace."""
         workspaces = self.load_workspaces()
@@ -354,38 +356,38 @@ class WorkspaceManager:
 
 class SmartSuggestions:
     """Intelligent suggestions system."""
-    
+
     @staticmethod
     def get_search_suggestions(query: str, history: List[str]) -> List[str]:
         """Get smart search suggestions."""
         suggestions = []
-        
+
         # Recent searches
         for item in history[-5:]:
             if query.lower() in item.lower() and item not in suggestions:
                 suggestions.append(item)
-        
+
         # Common patterns
         if any(ext in query.lower() for ext in ['.pdf', '.doc', '.txt']):
             suggestions.append(f"type:document {query}")
         elif any(ext in query.lower() for ext in ['.jpg', '.png', '.gif']):
             suggestions.append(f"type:image {query}")
-        
+
         return suggestions[:5]
-    
+
     @staticmethod
     def get_file_insights(files: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate insights from file collection."""
         if not files:
             return {}
-        
+
         total_size = sum(f.get('size_bytes', 0) for f in files)
         file_types = {}
-        
+
         for file in files:
             file_type = file.get('file_type', 'unknown')
             file_types[file_type] = file_types.get(file_type, 0) + 1
-        
+
         return {
             'total_files': len(files),
             'total_size': total_size,

@@ -8,7 +8,7 @@ def test_deepseek():
     print("=" * 50)
     print("   TEST INTEGRATION DEEPSEEK-R1")
     print("=" * 50)
-    
+
     # Test Ollama
     print("\n[1/3] Vérification d'Ollama...")
     import subprocess
@@ -21,20 +21,20 @@ def test_deepseek():
             print("    Lancez: ollama pull deepseek-r1")
     except Exception as e:
         print(f"    ✗ Erreur: {e}")
-    
+
     # Test ChatEngine
     print("\n[2/3] Test du ChatEngine...")
     try:
         from src.intelligence.chat_engine import ChatEngine
         from src.core.database import DatabaseManager
-        
+
         db = DatabaseManager()
         chat = ChatEngine(db=db)
-        
+
         if chat.is_available():
             print("    ✓ ChatEngine disponible")
             print(f"    Modèle: {chat.model_name}")
-            
+
             # Test simple
             print("\n[3/3] Test de conversation...")
             response = chat.chat("Bonjour, es-tu prêt à m'aider?", search_context=False)
@@ -46,12 +46,12 @@ def test_deepseek():
         else:
             print("    ✗ ChatEngine non disponible")
             print("    Vérifiez qu'Ollama est démarré")
-            
+
     except Exception as e:
         print(f"    ✗ Erreur: {e}")
         import traceback
         traceback.print_exc()
-    
+
     print("\n" + "=" * 50)
     print("         PROCHAINES ETAPES")
     print("=" * 50)

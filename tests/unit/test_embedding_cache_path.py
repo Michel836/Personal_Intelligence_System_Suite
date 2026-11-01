@@ -32,13 +32,17 @@ def test_embedding_cache_dir_honors_env(tmp_path, monkeypatch) -> None:
     assert gen.cache_dir.exists()
 
 
-def test_embedding_cache_default_stays_under_cwd(tmp_path, monkeypatch) -> None:
+def test_embedding_cache_default_is_absolute_and_cwd_independent(tmp_path, monkeypatch) -> None:
+    """The default cache must never be created below the current directory."""
+    from src.core.paths import embeddings_dir
+
     monkeypatch.setattr(em, "SENTENCE_TRANSFORMERS_AVAILABLE", False)
     monkeypatch.delenv("PIS_EMBEDDING_CACHE_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     gen = em.EmbeddingGenerator("bge-m3")
-    assert gen.cache_dir == __import__("pathlib").Path("data/cache/embeddings/bge-m3")
-    assert (tmp_path / "data" / "cache" / "embeddings" / "bge-m3").exists()
+    assert gen.cache_dir == embeddings_dir() / "bge-m3"
+    assert gen.cache_dir.is_absolute()
+    assert (tmp_path / "data").exists() is False
 
 
 def test_store_dir_is_isolated(tmp_path, monkeypatch) -> None:

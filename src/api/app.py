@@ -587,6 +587,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:  # noqa: BLE001
         logger.error("uvicorn is not installed; cannot start the API")
         return 2
-    print(f"[PIS] api listening on http://{host}:{port}{_API_PREFIX}")  # noqa: T201
+    print(f"[PIS] api listening on http://{host}:{port}{_API_PREFIX} "  # noqa: T201
+          f"db={db.db_path}")
     uvicorn.run(app, host=host, port=int(port), log_level="warning")
     return 0

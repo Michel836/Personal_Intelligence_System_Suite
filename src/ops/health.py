@@ -11,22 +11,27 @@ import os
 from pathlib import Path
 from typing import Any
 
+from ..core.coverage import extraction_coverage, semantic_coverage
 from .config import effective_config
 from .schema import check_schema
 from .version import app_version
 
-_DEFAULT_STORE_DIR = "data/cache/embeddings"
+
+def _store_base_dir(store_dir: Path | str | None = None) -> Path:
+    """Resolve the embedding store directory (absolute)."""
+    if store_dir is not None:
+        return Path(store_dir).expanduser().resolve()
+    raw = os.environ.get("PIS_EMBEDDING_STORE_DIR")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    from ..core.paths import embeddings_dir
+
+    return embeddings_dir()
 
 
-def _store_base_dir() -> Path:
-    raw = os.environ.get("PIS_EMBEDDING_STORE_DIR") or _DEFAULT_STORE_DIR
-    path = Path(raw)
-    return path if path.is_absolute() else Path(__file__).resolve().parents[2] / path
-
-
-def semantic_status() -> dict[str, Any]:
+def semantic_status(store_dir: Path | str | None = None) -> dict[str, Any]:
     """Read the matrix store metadata without loading the matrix or a model."""
-    base = _store_base_dir()
+    base = _store_base_dir(store_dir)
     stores: list[dict[str, Any]] = []
     if base.is_dir():
         for child in sorted(base.iterdir()):
@@ -47,7 +52,8 @@ def semantic_status() -> dict[str, Any]:
                 "normalized": meta.get("normalized"),
                 "matrix_present": (child / "matrix.npy").is_file(),
             })
-    return {"dir_exists": base.is_dir(), "store_count": len(stores), "stores": stores}
+    return {"dir": str(base), "dir_exists": base.is_dir(),
+            "store_count": len(stores), "stores": stores}
 
 
 def _table_count(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> int | None:
@@ -95,6 +101,14 @@ def _db_status(db: Any, *, include_paths: bool) -> dict[str, Any]:
     return status
 
 
+def _coverage_safe(fn: Any, db: Any) -> dict[str, Any]:
+    try:
+        result = fn(db)
+    except Exception as exc:  # noqa: BLE001 - coverage must never break health
+        return {"error": type(exc).__name__}
+    return result if isinstance(result, dict) else {"error": "invalid coverage"}
+
+
 def health_report(db: Any, *, include_paths: bool = False) -> dict[str, Any]:
     config = effective_config(include_paths=include_paths)
     report: dict[str, Any] = {
@@ -103,6 +117,8 @@ def health_report(db: Any, *, include_paths: bool = False) -> dict[str, Any]:
         "db": _db_status(db, include_paths=include_paths),
         "schema": check_schema(db),
         "semantic": semantic_status(),
+        "semantic_coverage": _coverage_safe(semantic_coverage, db),
+        "extraction_coverage": _coverage_safe(extraction_coverage, db),
         "ingestion_queue": _queue_status(db),
         "privacy_policy": config["privacy_policy"],
         "ai_mode": config["ai_mode"],

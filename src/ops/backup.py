@@ -14,6 +14,11 @@ Design:
 """
 from __future__ import annotations
 
+from ..core.paths import (
+    default_db_path as _default_db_path,
+    embeddings_dir as _default_embeddings_dir,
+)
+
 import hashlib
 import json
 import os
@@ -61,7 +66,7 @@ def _backup_dir() -> Path:
 
 
 def _semantic_base_dir() -> Path:
-    raw = os.environ.get("PIS_EMBEDDING_STORE_DIR") or "data/cache/embeddings"
+    raw = os.environ.get("PIS_EMBEDDING_STORE_DIR") or str(_default_embeddings_dir())
     path = Path(raw)
     return path if path.is_absolute() else Path(__file__).resolve().parents[2] / path
 
@@ -302,7 +307,7 @@ def restore_backup(path: Path | str, *, target_db: Path | str | None = None,
                              error="confirmation required (pass confirm=True)")
     manifest = verification["manifest"]
     backup_id = manifest.get("backup_id")
-    target = Path(target_db) if target_db else Path("data/indexes/files.db")
+    target = Path(target_db) if target_db else _default_db_path()
     warnings: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="pis-restore-") as tmp:

@@ -1,6 +1,6 @@
-# PostgreSQL dependencies
-psycopg2-binary>=2.9.9
-sqlalchemy>=2.0.23
-alembic>=1.13.0
-pgvector>=0.2.4
-asyncpg>=0.29.0
+# Optional PostgreSQL/pgvector backend (never required; the canonical vector
+# backend is the local NumPy matrix store).
+#
+#   pip install -r requirements-postgres.txt
+-c constraints.txt
+-e .[postgres]

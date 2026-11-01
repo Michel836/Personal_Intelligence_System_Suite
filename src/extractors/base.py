@@ -14,7 +14,7 @@ class ExtractionResult:
     metadata: Dict[str, Any] = None
     error: Optional[str] = None
     extraction_time: float = 0.0
-    
+
     def __post_init__(self):
         if self.metadata is None:
             self.metadata = {}
@@ -22,20 +22,20 @@ class ExtractionResult:
 
 class BaseExtractor(ABC):
     """Base class for content extractors."""
-    
+
     def __init__(self):
         self.supported_extensions = set()
-    
+
     @abstractmethod
     def can_extract(self, file_path: Path) -> bool:
         """Check if this extractor can handle the file."""
         pass
-    
+
     @abstractmethod
     def extract_content(self, file_path: Path) -> ExtractionResult:
         """Extract content from file."""
         pass
-    
+
     def get_name(self) -> str:
         """Get extractor name."""
         return self.__class__.__name__

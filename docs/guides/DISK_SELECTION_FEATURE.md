@@ -124,7 +124,6 @@ src/ui/disk_selector.py        # Composant de sélection UI
 ### 🔄 **Fichiers Modifiés**
 ```
 src/ui/dashboard.py           # Scan dialog avec sélection
-src/ui/modern_app.py          # Page scanner avancée
 ```
 
 ### 🎯 **Fonctions Clés**

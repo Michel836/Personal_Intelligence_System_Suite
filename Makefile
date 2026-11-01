@@ -1,137 +1,119 @@
 # Makefile for 36TB Intelligence
+#
+# Single source of truth for dependencies: pyproject.toml (+ constraints.txt).
 
-.PHONY: help install install-dev setup test lint format clean run scan ui lite smart full
+PY ?= .venv/bin/python
+PIP := $(PY) -m pip
 
-# Default target
+.PHONY: help install install-dev setup test test-fast test-release acceptance \
+        lint typecheck quality format format-check clean run scan ui lite smart full profile
+
 help:
 	@echo "36TB Intelligence - Personal Knowledge Operating System"
 	@echo ""
 	@echo "Available commands:"
-	@echo "  install     Install production dependencies"
-	@echo "  install-dev Install development dependencies"
-	@echo "  setup       Complete setup (install + configure)"
-	@echo "  test        Run test suite"
-	@echo "  lint        Run code linting"
-	@echo "  format      Format code"
-	@echo "  clean       Clean temporary files"
-	@echo "  run         Run quick scan test"
-	@echo "  scan        Scan specific drive (make scan DRIVE=C:)"
-	@echo "  ui          Start Streamlit UI"
+	@echo "  install       Install core runtime (editable, constrained)"
+	@echo "  install-dev   Install core + dev tools (editable, constrained)"
+	@echo "  setup         Complete setup (install-dev + git hooks)"
+	@echo "  test          Full test suite with coverage"
+	@echo "  test-fast     Fast test suite (no coverage)"
+	@echo "  test-release  Release acceptance suite"
+	@echo "  acceptance    Fresh venv + wheel new-user acceptance"
+	@echo "  lint          Ruff + mypy debt budget (scripts/quality_gate.py)"
+	@echo "  typecheck     mypy only"
+	@echo "  quality       lint + test (CI baseline)"
+	@echo "  format        black + ruff format + isort"
+	@echo "  clean         Remove caches and build artefacts"
+	@echo "  scan          Scan a root (make scan ROOT=/path)"
+	@echo "  ui            Start the canonical Streamlit UI"
+	@echo "  lite|smart|full  Start a launch profile"
 
+# ---------------------------------------------------------------------------
 # Installation
+# ---------------------------------------------------------------------------
 install:
-	pip install --upgrade pip setuptools wheel
-	pip install -r requirements.txt
+	$(PIP) install --upgrade pip setuptools wheel
+	$(PIP) install -c constraints.txt -e .
 
-install-dev: install
-	pip install -r requirements-dev.txt
-	pre-commit install
+install-dev:
+	$(PIP) install --upgrade pip setuptools wheel
+	$(PIP) install -c constraints.txt -e ".[dev]"
 
-# Setup
 setup: install-dev
-	@echo "Creating data directories..."
-	mkdir -p data/{cache,indexes,reports,logs}
-	@echo "Setup complete! Copy .env.example to .env and configure."
+	$(PY) -c "from src.core.paths import ensure_layout; print(ensure_layout())"
+	-$(PY) -m pre_commit install
 
-# Testing
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 test:
-	pytest -v --cov=src --cov-report=html --cov-report=term
+	$(PY) -m pytest -v --cov=src --cov-report=html --cov-report=term
 
-test-quick:
-	pytest -v -x
+test-fast:
+	$(PY) -m pytest -q
 
-# Code quality
+test-release:
+	$(PY) -m pytest tests/release tests/ui -q
+
+acceptance:
+	bash scripts/acceptance_new_user.sh
+
+# ---------------------------------------------------------------------------
+# Quality: a *budgeted* gate that must pass while the legacy debt is retired.
+# ---------------------------------------------------------------------------
 lint:
-	ruff check src/ scripts/ tests/
-	mypy src/
+	$(PY) scripts/quality_gate.py
+
+typecheck:
+	$(PY) -m mypy src
+
+quality: lint test
 
 format:
-	black src/ scripts/ tests/
-	ruff format src/ scripts/ tests/
-	isort src/ scripts/ tests/
+	$(PY) -m black src/ scripts/ tests/
+	$(PY) -m ruff format src/ scripts/ tests/
+	$(PY) -m isort src/ scripts/ tests/
 
 format-check:
-	black --check src/ scripts/ tests/
-	ruff format --check src/ scripts/ tests/
+	$(PY) -m black --check src/ scripts/ tests/
+	$(PY) -m ruff format --check src/ scripts/ tests/
 
+# ---------------------------------------------------------------------------
 # Cleaning
+# ---------------------------------------------------------------------------
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 	find . -type f -name "*.pyo" -delete
-	find . -type f -name "*.coverage" -delete
-	rm -rf .pytest_cache/
-	rm -rf .mypy_cache/
-	rm -rf .ruff_cache/
-	rm -rf htmlcov/
-	rm -rf dist/
-	rm -rf build/
-	rm -rf *.egg-info/
+	find . -type f -name ".coverage" -delete
+	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
+	rm -rf dist build
+	rm -rf *.egg-info
 
+# ---------------------------------------------------------------------------
 # Running
+# ---------------------------------------------------------------------------
 run:
-	python scripts/quick_scan.py C: 1000
+	$(PY) -m src.cli scan $(ROOT) --limit 1000
 
 scan:
-ifndef DRIVE
-	@echo "Usage: make scan DRIVE=C:"
+ifndef ROOT
+	@echo "Usage: make scan ROOT=/path/to/corpus"
 else
-	python scripts/quick_scan.py $(DRIVE) 5000
+	$(PY) -m src.cli scan $(ROOT)
 endif
 
 ui:
-	python -m src.launcher --profile full
+	$(PY) -m src.launcher --profile full
 
-# Modern launch profiles (M012-B2): one canonical app, three profiles.
 lite:
-	python -m src.launcher --profile lite
+	$(PY) -m src.launcher --profile lite
 
 smart:
-	python -m src.launcher --profile smart
+	$(PY) -m src.launcher --profile smart
 
 full:
-	python -m src.launcher --profile full
-
-# Development utilities
-check-install:
-	python scripts/verify_installation.py
+	$(PY) -m src.launcher --profile full
 
 profile:
-	py-spy record -o profile.svg -- python scripts/quick_scan.py C: 1000
-
-# Database operations
-db-init:
-	alembic upgrade head
-
-db-migrate:
-	alembic revision --autogenerate -m "Auto migration"
-
-db-upgrade:
-	alembic upgrade head
-
-db-downgrade:
-	alembic downgrade -1
-
-# Docker operations
-docker-build:
-	docker-compose build
-
-docker-up:
-	docker-compose up -d
-
-docker-down:
-	docker-compose down
-
-docker-logs:
-	docker-compose logs -f
-
-# Documentation
-docs:
-	mkdocs serve
-
-docs-build:
-	mkdocs build
-
-# CI/CD
-ci: format-check lint test
-	@echo "All CI checks passed!"
+	$(PY) -m src.cli scan $(ROOT) --limit 1000

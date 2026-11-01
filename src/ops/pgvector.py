@@ -17,13 +17,15 @@ import os
 from pathlib import Path
 from typing import Any
 
+from ..core.paths import embeddings_dir as _default_embeddings_dir
+
 MATRIX = "matrix"
 PGVECTOR = "pgvector"
 _TABLE = "pis_vectors"
 
 
 def _store_base_dir() -> Path:
-    raw = os.environ.get("PIS_EMBEDDING_STORE_DIR") or "data/cache/embeddings"
+    raw = os.environ.get("PIS_EMBEDDING_STORE_DIR") or str(_default_embeddings_dir())
     path = Path(raw)
     return path if path.is_absolute() else Path(__file__).resolve().parents[2] / path
 

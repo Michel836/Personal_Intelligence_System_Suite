@@ -26,11 +26,11 @@ try:
     db = DatabaseManager()
     chat_engine = ChatEngine(db=db)
     print("OK Components initialized")
-    
+
     # Check availability
     available = chat_engine.is_available()
     print(f"Chat engine available: {available}")
-    
+
     if available:
         stats = chat_engine.get_stats()
         print(f"   Model: {stats.get('model', 'Unknown')}")
@@ -39,7 +39,7 @@ try:
         print("INFO Install Ollama to test full functionality:")
         print("   curl -fsSL https://ollama.ai/install.sh | sh")
         print("   ollama pull llama3.2:3b")
-    
+
 except Exception as e:
     print(f"ERROR Initialization failed: {e}")
     import traceback
@@ -48,7 +48,7 @@ except Exception as e:
 print()
 print("Integration Status:")
 print("OK Chat engine code integrated")
-print("OK Streamlit UI page created") 
+print("OK Streamlit UI page created")
 print("OK Ready for testing with Ollama")
 print()
 print("Next steps:")

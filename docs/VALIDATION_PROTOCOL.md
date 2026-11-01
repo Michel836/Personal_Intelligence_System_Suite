@@ -27,12 +27,16 @@ bash scripts/quality.sh
 
 - repository static audit and declared-entrypoint verification;
 - Python bytecode compilation (`compileall`);
-- Ruff;
-- mypy;
-- pytest;
+- **budgeted** Ruff + mypy gate (`scripts/quality_gate.py`): totals may never
+  exceed the reviewed baseline in `.quality/`, a file may never exceed its own
+  budget, new files must be clean, and `--changed <ref>` forbids regressions in
+  files touched by a pull request. The budget only ratchets down;
+- pytest (unit + integration + release + UI acceptance);
 - `git diff --check`.
 
-These gates establish code health. They do **not** claim that every product function works.
+These gates establish code health. They do **not** claim that every product
+function works. Functional evidence is recorded separately
+(`docs/REAL_CORPUS.md`, `docs/ACCEPTANCE_NEW_USER.md`).
 
 ## Functional qualification phase
 

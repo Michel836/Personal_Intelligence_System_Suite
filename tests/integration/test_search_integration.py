@@ -18,9 +18,9 @@ def temp_db():
     """Create temporary database for testing."""
     with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp_file:
         db_path = Path(tmp_file.name)
-    
+
     yield db_path
-    
+
     # Cleanup
     if db_path.exists():
         db_path.unlink()
@@ -31,7 +31,7 @@ def test_files_dir():
     """Create temporary directory with test files."""
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp_path = Path(tmp_dir)
-        
+
         # Create test files
         (tmp_path / "test_document.txt").write_text(
             "This is a test document about artificial intelligence and machine learning."
@@ -42,7 +42,7 @@ def test_files_dir():
         (tmp_path / "subdir" / "nested_file.doc").write_text(
             "Nested document with important information about databases and search engines."
         )
-        
+
         yield tmp_path
 
 
@@ -86,45 +86,45 @@ def populated_db(db_manager, test_files_dir, file_info_factory):
 
 class TestDatabaseIntegration:
     """Test database operations."""
-    
+
     def test_database_creation(self, temp_db):
         """Test database is created correctly."""
         db = DatabaseManager(temp_db)
         assert temp_db.exists()
-        
+
         # Test schema exists
         with db.get_connection() as conn:
             cursor = conn.execute("""
-                SELECT name FROM sqlite_master 
+                SELECT name FROM sqlite_master
                 WHERE type='table' AND name='files'
             """)
             assert cursor.fetchone() is not None
-    
+
     def test_file_insertion_and_retrieval(self, populated_db):
         """Test inserting and retrieving files."""
         # Test basic search
         results = populated_db.search_files()
         assert len(results) == 3
-        
+
         # Test search by filename
         results = populated_db.search_files(query="test_document")
         assert len(results) == 1
         assert results[0]['filename'] == "test_document.txt"
-    
+
     def test_search_filters(self, populated_db):
         """Test search with various filters."""
         # Test by file type
         results = populated_db.search_files(file_type=FileType.DOCUMENT)
         assert len(results) == 2
-        
+
         # Test by extension
         results = populated_db.search_files(extension=".jpg")
         assert len(results) == 1
-        
+
         # Test by size
         results = populated_db.search_files(min_size=1000)
         assert len(results) == 1  # Only the image file
-    
+
     def test_content_search(self, populated_db):
         """Content becomes searchable only after extraction updates it."""
         # Metadata is available immediately after scan/save...
@@ -155,7 +155,7 @@ class TestDatabaseIntegration:
 
 class TestScannerIntegration:
     """Test scanner functionality."""
-    
+
     def test_scanner_basic_functionality(self, test_files_dir, temp_db):
         """Test the canonical scan -> persist -> search flow."""
         db = DatabaseManager(temp_db)
@@ -173,7 +173,7 @@ class TestScannerIntegration:
         db.save_files_batch(files)
         results = db.search_files()
         assert len(results) == len(files)
-    
+
     def test_scanner_file_type_detection(self, test_files_dir, temp_db):
         """Test file type detection during scanning."""
         db = DatabaseManager(temp_db)
@@ -193,38 +193,38 @@ class TestScannerIntegration:
 
 class TestSemanticSearchIntegration:
     """Test semantic search functionality."""
-    
+
     @pytest.mark.skipif(
-        not os.getenv('ENABLE_AI_TESTS'), 
+        not os.getenv('ENABLE_AI_TESTS'),
         reason="AI tests disabled - set ENABLE_AI_TESTS=1 to run"
     )
     def test_semantic_search_basic(self, populated_db):
         """Test basic semantic search functionality."""
         search_engine = SemanticSearchEngine(populated_db)
-        
+
         if not search_engine.is_available():
             pytest.skip("Semantic search not available")
-        
+
         # Test semantic search
         results = search_engine.semantic_search("machine learning concepts")
-        
+
         assert isinstance(results, list)
         # Should find documents even with different wording
         assert len(results) >= 0  # May be 0 if embeddings not available
-    
+
     @pytest.mark.skipif(
-        not os.getenv('ENABLE_AI_TESTS'), 
+        not os.getenv('ENABLE_AI_TESTS'),
         reason="AI tests disabled"
     )
     def test_hybrid_search(self, populated_db):
         """Test hybrid search combining semantic and text search."""
         search_engine = SemanticSearchEngine(populated_db)
-        
+
         if not search_engine.is_available():
             pytest.skip("Semantic search not available")
-        
+
         results = search_engine.hybrid_search("important database information")
-        
+
         assert isinstance(results, list)
         # Results should include relevance scores
         if results:
@@ -233,22 +233,22 @@ class TestSemanticSearchIntegration:
 
 class TestChatIntegration:
     """Test chat functionality."""
-    
+
     @pytest.mark.skipif(
-        not os.getenv('ENABLE_AI_TESTS'), 
+        not os.getenv('ENABLE_AI_TESTS'),
         reason="AI tests disabled"
     )
     def test_chat_basic_functionality(self, populated_db):
         """Test basic chat functionality."""
         chat_engine = ChatEngine(db=populated_db)
-        
+
         response = chat_engine.chat("What documents do you have about AI?")
-        
+
         assert isinstance(response, dict)
         assert 'response' in response
         assert isinstance(response['response'], str)
         assert len(response['response']) > 0
-    
+
     @pytest.mark.skipif(
         not os.getenv('ENABLE_AI_TESTS'),
         reason="AI tests disabled"
@@ -256,9 +256,9 @@ class TestChatIntegration:
     def test_chat_with_context(self, populated_db):
         """Test chat with document context."""
         chat_engine = ChatEngine(db=populated_db)
-        
+
         response = chat_engine.chat("Tell me about the test document", search_context=True)
-        
+
         assert isinstance(response, dict)
         assert 'sources' in response
         assert response.get('context_used') is True
@@ -266,12 +266,12 @@ class TestChatIntegration:
 
 class TestEndToEndWorkflow:
     """Test complete end-to-end workflows."""
-    
+
     def test_scan_search_workflow(self, test_files_dir, temp_db):
         """Test complete scan and search workflow."""
         db = DatabaseManager(temp_db)
         scanner = FastScannerEngine()
-        
+
         # 1. Scan directory (canonical generator contract).
         files = list(scanner.scan_paths([test_files_dir]))
         assert len(files) > 0
@@ -292,7 +292,7 @@ class TestEndToEndWorkflow:
         )
         content_results = db.search_files(query="test document")
         assert len(content_results) > 0
-    
+
     @pytest.mark.skipif(
         not os.getenv('ENABLE_AI_TESTS'),
         reason="AI tests disabled"
@@ -301,16 +301,16 @@ class TestEndToEndWorkflow:
         """Test complete AI-powered workflow."""
         semantic_search = SemanticSearchEngine(populated_db)
         chat_engine = ChatEngine(db=populated_db)
-        
+
         if not semantic_search.is_available():
             pytest.skip("AI services not available")
-        
+
         # 1. Semantic search
         search_results = semantic_search.semantic_search("artificial intelligence")
-        
+
         # 2. Chat about results
         response = chat_engine.chat("What can you tell me about AI from these documents?")
-        
+
         assert isinstance(search_results, list)
         assert isinstance(response, dict)
         assert 'response' in response
@@ -318,22 +318,22 @@ class TestEndToEndWorkflow:
 
 class TestPerformanceIntegration:
     """Test performance characteristics."""
-    
+
     def test_large_dataset_search_performance(self, temp_db):
         """Test search performance with larger dataset."""
         db = DatabaseManager(temp_db)
-        
+
         # Insert many test records
         with db.get_connection() as conn:
             for i in range(1000):
                 conn.execute("""
                     INSERT INTO files (
-                        path, filename, extension, size_bytes, 
+                        path, filename, extension, size_bytes,
                         file_type, priority, content_text
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
                     f"/test/path_{i}.txt",
-                    f"file_{i}.txt", 
+                    f"file_{i}.txt",
                     ".txt",
                     1000 + i,
                     "document",
@@ -341,29 +341,29 @@ class TestPerformanceIntegration:
                     f"This is test document number {i} with some content about testing and performance."
                 ))
             conn.commit()
-        
+
         # Test search performance
         import time
         start_time = time.time()
-        
+
         # CONTRACT(M004A): DatabaseManager.search_files matches contiguous LIKE
         # substrings. Tokenized/multi-word (FTS) semantics are deliberately NOT
         # covered here and are deferred to M004B.
         results = db.search_files(query="testing and performance", limit=50)
-        
+
         search_time = time.time() - start_time
-        
+
         assert len(results) > 0
         assert search_time < 1.0  # Should be fast even with 1000 records
-    
+
     def test_concurrent_access(self, populated_db):
         """Test concurrent database access."""
         import threading
         import time
-        
+
         results = []
         errors = []
-        
+
         def worker():
             try:
                 # Multiple operations per thread
@@ -373,18 +373,18 @@ class TestPerformanceIntegration:
                     time.sleep(0.01)  # Small delay
             except Exception as e:
                 errors.append(e)
-        
+
         # Create multiple threads
         threads = []
         for _ in range(5):
             thread = threading.Thread(target=worker)
             threads.append(thread)
             thread.start()
-        
+
         # Wait for completion
         for thread in threads:
             thread.join(timeout=10)
-        
+
         assert len(errors) == 0, f"Concurrent access errors: {errors}"
         assert len(results) > 0
 

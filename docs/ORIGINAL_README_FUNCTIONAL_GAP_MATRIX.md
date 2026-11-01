@@ -4,6 +4,9 @@
 > (README) vs. current implementation truth (code/tests/runtime). Sanitized:
 > no private paths, filenames or content.
 >
+> **Note (M022):** `src/ui/modern_app.py` was removed; the canonical app is
+> `src/ui/app.py` only.
+>
 > Audited baseline: branch `feat/m001-validation-harness`, working tree incl.
 > M010/M011/M012-A. The mission header referenced `63240bc`; the audited tree is
 > three commits newer (M012-A). No push.

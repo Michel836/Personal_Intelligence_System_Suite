@@ -8,6 +8,12 @@
 [![SQLite](https://img.shields.io/badge/Database-SQLite-blue.svg)](https://www.sqlite.org)
 [![Status](https://img.shields.io/badge/Status-v1.0%20Active-brightgreen.svg)]()
 
+> **Current status (M022, 2026-11):** functional Linux MVP — see
+> [`docs/STATUS.md`](docs/STATUS.md), [`docs/REAL_CORPUS.md`](docs/REAL_CORPUS.md)
+> and [`docs/ACCEPTANCE_NEW_USER.md`](docs/ACCEPTANCE_NEW_USER.md). Sections
+> below that describe the old Windows-first / `modern_app` / PostgreSQL stack
+> are historical and kept for traceability only.
+
 ## 🚦 Release Candidate (v1.0.0-rc1)
 
 M013–M020 are consolidated and validated as a release candidate. Start here:
@@ -36,19 +42,31 @@ measured startup/RAM.
 | **💪 FULL** | Every implemented capability, lazy-loaded, privacy-constrained | 8501 |
 
 ```bash
-# Linux / Kubuntu / macOS (recommended wrappers)
+# Install (core runtime, exact validated versions)
+python -m pip install -c constraints.txt -e .
+
+# Canonical CLI: scan → extract → search
+pis status
+pis scan /path/to/corpus          # safe partial scan (use --strict to fail closed)
+pis extract --limit 500
+pis search "invoice"
+pis embed --background            # resumable semantic coverage
+pis report build --kind SEARCH --query '{"query":"invoice"}'
+
+# Canonical app, three profiles (same app, different defaults)
 scripts/run_lite.sh
 scripts/run_smart.sh
 scripts/run_full.sh
-
-# Equivalent unified launcher (any platform)
-.venv/bin/python -m src.launcher --profile lite
-.venv/bin/python -m src.launcher --profile smart
-.venv/bin/python -m src.launcher --profile full
-
-# Windows
-.venv\Scripts\python.exe -m src.launcher --profile lite
+# or: python -m src.launcher --profile full
 ```
+
+Runtime data is **absolute and CWD-independent**:
+`~/.local/share/pis/indexes/files.db` (override with `PIS_DB_PATH` or
+`PIS_DATA_DIR`). A legacy `./data` tree is migrated once; set
+`PIS_NO_AUTO_MIGRATE=1` to opt out or run `pis migrate-data`.
+
+CLI exit codes: `0` complete, `3` partial/cancelled, `2` failure. Every command
+prints the resolved database path (`--json` includes it in `_meta`).
 
 > **Historical note.** The original Windows-only commands
 > (`streamlit run lite_mode.py`, `.venv/Scripts/python.exe`, ports 8510/8504/8501
@@ -67,7 +85,7 @@ scripts/run_full.sh
 - **Activity types**: SCAN, SEARCH, AI_CHAT, DATABASE, EXTRACTION, etc.
 
 ### ⚡ Modular Performance System
-- **LITE Mode**: Ultra-fast startup (30MB RAM, <1s launch)
+- **LITE Mode**: Ultra-fast startup (measured ~0.9 s, ~170 MB peak)
 - **Smart Launcher**: Choose exactly which modules you need
 - **Performance presets**: Minimal → Standard → AI-Powered → Full
 - **Resource estimation**: See RAM and startup time before launch

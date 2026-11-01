@@ -160,8 +160,9 @@ def main() -> int:
     gates = [
         ("audit", [str(PYTHON), "scripts/audit_repo.py"]),
         ("compileall", [str(PYTHON), "-m", "compileall", "-q", "src", "scripts", "tests"]),
-        ("ruff", [str(PYTHON), "-m", "ruff", "check", "src", "scripts", "tests"]),
-        ("mypy", [str(PYTHON), "-m", "mypy", "src"]),
+        # Budgeted ruff + mypy gate: the total may not exceed the reviewed
+        # baseline and no changed file may regress (see scripts/quality_gate.py).
+        ("quality_gate", [str(PYTHON), "scripts/quality_gate.py"]),
         ("pytest", [str(PYTHON), "-m", "pytest", "-q"]),
         ("diff_check", ["git", "diff", "--check"]),
     ]

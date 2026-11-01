@@ -218,8 +218,6 @@ The historical launchers are thin compatibility wrappers:
 | `python launchers/launcher.py` | delegates to `src.launcher --profile full` |
 | `streamlit run launchers/*.py` | prints a migration message (obsolete) |
 
-`src/ui/modern_app.py` remains available as a separate experimental UI via
-`streamlit run src/ui/modern_app.py`; it is **not** part of the launch profiles.
 The stale duplicate `src/ui/app_backup.py` was removed.
 
 ## Failure behaviour

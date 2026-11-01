@@ -12,26 +12,26 @@ def test_ollama_integration():
     """Test l'intégration Ollama."""
     print("🚀 Test d'intégration Ollama")
     print("=" * 50)
-    
+
     # Initialiser le moteur de chat
     chat = ChatEngine()
-    
+
     # Afficher les statistiques
     stats = chat.get_stats()
     print("📊 Statut du système:")
     for key, value in stats.items():
         print(f"  - {key}: {value}")
-    
+
     print("\n" + "=" * 50)
     print("🗣️  Test de conversation...")
-    
+
     # Test de conversation
     questions = [
         "Bonjour! Peux-tu te présenter?",
         "Que peux-tu faire pour m'aider avec mes documents?",
         "Comment puis-je utiliser la recherche sémantique?"
     ]
-    
+
     for i, question in enumerate(questions, 1):
         print(f"\n[Q{i}] {question}")
         try:
@@ -41,7 +41,7 @@ def test_ollama_integration():
             print(f"    └── Temps: {response.get('response_time', 0):.2f}s")
         except Exception as e:
             print(f"[ERROR] {e}")
-    
+
     print("\n" + "=" * 50)
     print("✅ Test terminé!")
 

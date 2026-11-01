@@ -185,10 +185,17 @@ def launch(plan: LaunchPlan) -> int:
     if not plan.app_path.exists():
         sys.stderr.write(f"canonical app not found: {plan.app_path}\n")
         return 2
+    from src.core.paths import resolve_db_path
+
+    try:
+        db_path = str(resolve_db_path(plan.env.get("PIS_DB_PATH")))
+    except Exception:  # noqa: BLE001 - launch must not fail on diagnostics
+        db_path = plan.env.get("PIS_DB_PATH") or "unknown"
     sys.stdout.write(
         f"[PIS] profile={plan.profile.value} url=http://{plan.host}:{plan.port} "
         f"ai_mode={plan.env.get('PIS_AI_MODE')} "
-        f"remote_policy={plan.env.get('PIS_REMOTE_CONTENT_POLICY')}\n"
+        f"remote_policy={plan.env.get('PIS_REMOTE_CONTENT_POLICY')} "
+        f"db={db_path}\n"
     )
     sys.stdout.flush()
     try:

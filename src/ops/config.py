@@ -21,15 +21,17 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..core.paths import backup_dir, default_db_path, embeddings_dir, export_dir
+
 SECRET_HINTS = ("SECRET", "PASSWORD", "PASSWD", "TOKEN", "API_KEY", "APIKEY",
                 "CREDENTIAL", "PRIVATE_KEY")
 
 #: Canonical operations environment variables and their defaults.
 DEFAULTS: dict[str, str] = {
-    "PIS_DB_PATH": "data/indexes/files.db",
-    "PIS_EMBEDDING_STORE_DIR": "data/cache/embeddings",
-    "PIS_EXPORT_DIR": str(Path.home() / ".pis-exports"),
-    "PIS_BACKUP_DIR": str(Path.home() / ".pis-backups"),
+    "PIS_DB_PATH": default_db_path(),
+    "PIS_EMBEDDING_STORE_DIR": str(embeddings_dir()),
+    "PIS_EXPORT_DIR": str(export_dir()),
+    "PIS_BACKUP_DIR": str(backup_dir()),
     "PIS_API_HOST": "127.0.0.1",
     "PIS_API_PORT": "8600",
     "PIS_REMOTE_CONTENT_POLICY": "never",

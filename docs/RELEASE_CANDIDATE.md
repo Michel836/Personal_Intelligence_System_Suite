@@ -1,11 +1,13 @@
-# Release Candidate — Install, Operate and Limits (M021)
+# Release Candidate — Install, Operate and Limits (M021 + M022)
 
 This is the operator guide for the **v1.0.0-rc1** release candidate of 36TB
 Intelligence. It describes the canonical path only: one Streamlit app, one CLI
 (`pis`), one loopback API and one SQLite database.
 
-> Feature freeze (M021). No new user capability is added here; this lot validates
-> and stabilises M013–M020.
+> M021 was the feature freeze. M022 hardens the MVP: safe partial scans, XDG
+> paths, declared/constrained dependencies, a budgeted quality gate, a
+> resumable embedding job and derived-data CLI commands. See
+> [`REAL_CORPUS.md`](REAL_CORPUS.md) and [`ACCEPTANCE_NEW_USER.md`](ACCEPTANCE_NEW_USER.md).
 
 ## 1. Install
 
@@ -13,9 +15,15 @@ Prerequisites: Python 3.11+, Linux/macOS/Windows, ~1 GB for the app + SQLite.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate           # .venv\Scripts\activate on Windows
-pip install -r requirements.txt     # minimal: -r requirements-minimal.txt
+source .venv/bin/activate
+pip install -c constraints.txt -e .        # core runtime
+# or: pip install -r requirements.txt      # core + recommended extras
+# or: pip install -c constraints.txt -e ".[dev]"   # tests/lint tools
 ```
+
+The wheel declares its own runtime dependencies; `constraints.txt` pins the
+versions validated for this release. A fresh-venv installation is verified by
+`scripts/acceptance_new_user.sh`.
 
 Optional system tools (detected, never required): `tesseract` (OCR),
 `libreoffice`/`soffice` (legacy Office/RTF and HTML→PDF export), `7z` (CHM),
@@ -37,15 +45,21 @@ scripts/run_full.sh     # every implemented capability, lazy-loaded
 First run: scan a root, extract, then search.
 
 ```bash
-pis scan /path/to/corpus
+pis scan /path/to/corpus          # safe partial scan; --strict to fail closed
 pis extract --limit 500
-pis semantic-refresh --limit 256      # optional; needs an embedding backend
+pis embed                         # resumable; --background/--status/--stop
 pis search "invoice" --mode lexical
+pis derived --only hashes,intel   # build derived layers on demand
 pis ui full
 ```
 
-The resolved database path is always printed, so a trial and a production target
-cannot be confused. An explicit `--db PATH` selects another database.
+Runtime data is absolute and CWD-independent:
+`~/.local/share/pis/indexes/files.db` (override with `PIS_DATA_DIR` /
+`PIS_DB_PATH`). A legacy `./data` tree is migrated once (`pis migrate-data`;
+`PIS_NO_AUTO_MIGRATE=1` opts out). The resolved database path is printed by
+every command and included in `_meta` for `--json`.
+
+Exit codes: `0` complete, `3` partial/cancelled, `2` failure.
 
 ## 3. Daily workflow
 
@@ -148,15 +162,15 @@ actionable outcome and is never retried forever.
 * Optional local-LLM topic refinement is defined but not enabled.
 * Cluster ids are run-scoped (no cross-rebuild stability guarantee).
 * Remote API has no auth/TLS (loopback, mono-user only).
-* PostgreSQL/pgvector path is dead/optional and not exercised.
-* `modern_app.py` is a legacy second entrypoint; the canonical app is
-  `src/ui/app.py`.
+* PostgreSQL/pgvector path is optional and not exercised.
+* The legacy `modern_app.py` entrypoint was **removed** in M022: one canonical
+  app (`src/ui/app.py`) only.
 
 ## 11. Canonical vs stale surface
 
 | Workflow | Canonical | Stale / legacy (kept, unwired or clearly secondary) |
 |---|---|---|
-| App | `src/ui/app.py` (+ profile launcher) | `src/ui/modern_app.py` |
+| App | `src/ui/app.py` (+ profile launcher) | — (legacy UI removed in M022) |
 | Scan | `scanner/fast_engine.py` via `ScanService` | `scanner/engine.py`, `scanner/turbo_scan.py` |
 | Visualisation | `ui/galaxy_page.py`, `ui/graph_page.py` | `visualizations/advanced_viz.py` 3D scatter (non-semantic) |
 | Vector backend | NumPy matrix store | `core/postgres_database.py` (dead) |
@@ -164,10 +178,11 @@ actionable outcome and is never retried forever.
 
 ## 12. Release acceptance evidence
 
-* `tests/release/` — 38 deterministic acceptance tests (E2E, lifecycle/crash,
-  profiles, backup round-trip, privacy, CLI/API, UI smoke).
-* `scripts/release/run_release_acceptance.py` — aggregate acceptance evidence
-  (timings + counts) under `/home/chu/.pis-trials/m021/evidence/`.
+* `tests/release/` + `tests/ui/` — deterministic acceptance tests (E2E,
+  lifecycle/crash, profiles, backup round-trip, privacy, CLI/API, UI smoke).
+* `docs/REAL_CORPUS.md` — instrumented real-corpus run (M022).
+* `docs/ACCEPTANCE_NEW_USER.md` + `scripts/acceptance_new_user.sh` — fresh
+  venv + wheel installation acceptance.
 * `.validation/<UTC>/validation.json` — audit/compileall/pytest/diff-check gates.
 * `/home/chu/.pis-trials/m020/evidence/` — M020 real-corpus benchmark.
 * Full suite: **747 passed, 5 intentional skips** (see release notes).

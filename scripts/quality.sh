@@ -18,9 +18,9 @@ run_gate() {
   fi
 }
 
+run_gate "audit" "$PYTHON_BIN" scripts/audit_repo.py
 run_gate "compileall" "$PYTHON_BIN" -m compileall -q src scripts tests
-run_gate "ruff" "$PYTHON_BIN" -m ruff check src scripts tests
-run_gate "mypy" "$PYTHON_BIN" -m mypy src
+run_gate "quality gate (ruff+mypy budget)" "$PYTHON_BIN" scripts/quality_gate.py
 run_gate "pytest" "$PYTHON_BIN" -m pytest -q
 run_gate "git diff --check" git diff --check
 

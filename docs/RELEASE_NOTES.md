@@ -4,6 +4,34 @@ Mono-user, local-first personal intelligence system. This release candidate
 consolidates eleven missions (M013–M020) into one canonical application. SQLite
 is canonical; the source corpus is never modified.
 
+## M022 — MVP hardening (this change)
+
+* **Safe partial scans.** Unreadable subtrees no longer abort a scan by
+  default: per-path evidence is stored in `scan_errors`, the run ends
+  `COMPLETED_WITH_WARNINGS`, and reconciliation only covers fully traversed
+  scopes. `--strict` restores fail-closed behaviour; `--exclude` /
+  `--exclude-path` add explicit exclusions.
+* **Stable CLI exit codes** (`0` complete, `3` partial/cancelled, `2` failure)
+  and the resolved database path on every command (`--json` → `_meta`).
+* **Packaging fixed.** `pyproject.toml` declares the 22 core runtime
+  dependencies, optional extras, package data and `constraints.txt` pins the
+  validated environment. A wheel installs and runs on a clean venv.
+* **XDG paths.** Data, cache, embeddings, exports, backups and job state are
+  absolute and CWD-independent; legacy `./data` migrates once
+  (`pis migrate-data`, `PIS_NO_AUTO_MIGRATE=1` to opt out).
+* **Budgeted quality gate** (`scripts/quality_gate.py`): ruff + mypy must stay
+  within a decreasing baseline and changed files must not regress. CI green.
+* **Resumable embedding job** (`pis embed --background/--status/--stop`) and a
+  semantic-coverage indicator in the UI.
+* **Derived-data CLI:** `pis hashes`, `pis derived` (hashes/intel/embeddings/
+  clusters), `pis embed`.
+* **Bugfixes:** report `--formats` is case-insensitive and validated;
+  `semantic-consistency`/`doctor` check the store bound to the database; the
+  dead “Modern” UI was removed.
+* **Evidence:** [`REAL_CORPUS.md`](REAL_CORPUS.md) — 15 192 files scanned,
+  620 documents extracted, 1 064 duplicate groups, 614/614 embedded (100 %),
+  12 clusters, 5 report artefacts.
+
 ## Major capabilities
 
 * **Scale & freshness (M013):** read-only 250k preflight, deterministic corpus
@@ -59,6 +87,5 @@ is canonical; the source corpus is never modified.
   LibreOffice/Chrome PDF are used instead.
 * The loopback API has no auth/TLS (mono-user only).
 * PostgreSQL/pgvector path is dead/optional and unexercised.
-* `src/ui/modern_app.py` remains as a legacy secondary entrypoint.
 * Inherited static debt (Ruff/mypy) in legacy modules is not fully retired; the
   active canonical runtime subset was cleaned where risk was low.

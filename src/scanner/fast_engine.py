@@ -1,8 +1,9 @@
 """Optimized fast scanner engine."""
 
 from pathlib import Path
-from typing import Iterator, Optional, Callable
+from typing import Iterator, Optional, Callable, Sequence
 from datetime import datetime
+import fnmatch
 import os
 import stat
 
@@ -17,6 +18,13 @@ from .models import (
 )
 
 
+#: Maximum number of per-path error records kept in memory/DB per scan. The
+#: authoritative counter stays ``ScanProgress.error_files``; once the cap is hit
+#: the traversal is marked incomplete and reconciliation is disabled entirely
+#: (safest possible behaviour).
+MAX_RECORDED_ERRORS = 500
+
+
 class FastScannerEngine:
     """High-speed file scanner optimized for performance.
 
@@ -26,10 +34,25 @@ class FastScannerEngine:
     FAILED and avoid destructive reconciliation.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        exclude_dirs: Sequence[str] = (),
+        exclude_paths: Sequence[str] = (),
+        ignore_errors: bool = False,
+    ):
         self.progress = ScanProgress()
         self.is_running = False
         self._cancelled = False
+        self._ignore_errors = bool(ignore_errors)
+        self._traversal_incomplete = False
+        self._scan_root: Optional[Path] = None
+        self._exclude_dir_patterns = tuple(
+            str(item).strip().lower() for item in exclude_dirs if str(item).strip()
+        )
+        self._exclude_paths = tuple(
+            Path(item).expanduser() for item in exclude_paths if str(item).strip()
+        )
 
         self._priority_extensions = {
             Priority.CRITICAL: {
@@ -70,15 +93,67 @@ class FastScannerEngine:
         limit: Optional[int] = None,
         progress_callback: Optional[Callable] = None,
         include_system: bool = False,
+        *,
+        ignore_errors: Optional[bool] = None,
+        exclude_dirs: Optional[Sequence[str]] = None,
+        exclude_paths: Optional[Sequence[str]] = None,
     ) -> Iterator[FileInfo]:
         """Ultra-fast single-pass scan."""
         self._reset_cancel()
+        self._configure(
+            ignore_errors=ignore_errors,
+            exclude_dirs=exclude_dirs,
+            exclude_paths=exclude_paths,
+        )
         yield from self._fast_scan(
             path,
             limit=limit,
             progress_callback=progress_callback,
             include_system=include_system,
         )
+
+    def _configure(
+        self,
+        *,
+        ignore_errors: Optional[bool] = None,
+        exclude_dirs: Optional[Sequence[str]] = None,
+        exclude_paths: Optional[Sequence[str]] = None,
+    ) -> None:
+        if ignore_errors is not None:
+            self._ignore_errors = bool(ignore_errors)
+        if exclude_dirs is not None:
+            self._exclude_dir_patterns = tuple(
+                str(item).strip().lower() for item in exclude_dirs if str(item).strip()
+            )
+        if exclude_paths is not None:
+            self._exclude_paths = tuple(
+                Path(item).expanduser() for item in exclude_paths if str(item).strip()
+            )
+
+    @property
+    def traversal_incomplete(self) -> bool:
+        """True when more errors occurred than could be recorded."""
+        return self._traversal_incomplete
+
+    def _record_error(
+        self, path: object, kind: str, message: object, *, counts_as_error: bool = True
+    ) -> None:
+        """Record one access error/excluded scope (bounded).
+
+        ``kind="excluded"`` records a subtree that was intentionally not
+        traversed; it protects reconciliation but is not a failure and does not
+        increment ``error_files``.
+        """
+        if counts_as_error:
+            self.progress.error_files += 1
+        if len(self.progress.errors) >= MAX_RECORDED_ERRORS:
+            self._traversal_incomplete = True
+            return
+        self.progress.errors.append({
+            "path": str(path),
+            "kind": kind,
+            "message": str(message)[:500],
+        })
 
     def _reset_cancel(self) -> None:
         self._cancelled = False
@@ -110,14 +185,26 @@ class FastScannerEngine:
         file_count = 0
         batch_size = 1000
         batch = []
+        self._scan_root = Path(path)
         root_device = self._filesystem_device(path)
         if root_device is None:
             self.is_running = False
-            raise OSError(f"Cannot determine filesystem for scan root: {path}")
+            self._record_error(path, "filesystem", f"cannot determine filesystem for {path}")
+            if not self._ignore_errors:
+                raise OSError(f"Cannot determine filesystem for scan root: {path}")
+            return
 
         def walk_error(error: OSError) -> None:
-            self.progress.error_files += 1
-            raise error
+            """Record a directory traversal failure and keep going (partial mode).
+
+            In strict mode the error is re-raised so the lifecycle marks the run
+            FAILED and reconciliation never runs. In partial mode the subtree is
+            recorded as unreadable and excluded from reconciliation.
+            """
+            failed_path = getattr(error, "filename", None) or path
+            self._record_error(failed_path, "directory", error)
+            if not self._ignore_errors:
+                raise error
 
         try:
             for root, dirs, files in os.walk(
@@ -127,15 +214,34 @@ class FastScannerEngine:
                     break
 
                 root_path = Path(root)
+                if self._is_user_excluded_path(root_path):
+                    self._record_error(root_path, "excluded", "user exclusion",
+                                       counts_as_error=False)
+                    dirs.clear()
+                    continue
                 current_device = self._filesystem_device(root_path)
                 if current_device is None:
-                    self.progress.error_files += 1
-                    raise OSError(f"Cannot stat directory during scan: {root_path}")
+                    self._record_error(root_path, "directory",
+                                       f"cannot stat directory {root_path}")
+                    dirs.clear()
+                    if not self._ignore_errors:
+                        raise OSError(f"Cannot stat directory during scan: {root_path}")
+                    continue
                 if current_device != root_device:
                     logger.debug(
                         f"Skipping foreign filesystem at {root_path} "
                         f"(device={current_device}, root_device={root_device})"
                     )
+                    # A nested mount point was not traversed; never infer that
+                    # previously-seen paths below it were deleted.
+                    self._record_error(root_path, "excluded", "foreign filesystem",
+                                       counts_as_error=False)
+                    dirs.clear()
+                    continue
+
+                if self._is_user_excluded_dir(root_path):
+                    self._record_error(root_path, "excluded", "user exclusion",
+                                       counts_as_error=False)
                     dirs.clear()
                     continue
 
@@ -150,6 +256,11 @@ class FastScannerEngine:
                         break
 
                     file_path = root_path / filename
+                    if self._is_user_excluded_path(file_path):
+                        self._record_error(file_path, "excluded", "user exclusion",
+                                           counts_as_error=False)
+                        self.progress.skipped_files += 1
+                        continue
                     if self._should_skip_file_fast(file_path, include_system=include_system):
                         self.progress.skipped_files += 1
                         continue
@@ -157,7 +268,7 @@ class FastScannerEngine:
                     try:
                         file_info = self._extract_file_info_fast(file_path)
                     except (OSError, PermissionError) as exc:
-                        self.progress.error_files += 1
+                        self._record_error(file_path, "file", exc)
                         logger.warning(f"Cannot access {file_path}: {exc}")
                         continue
 
@@ -202,7 +313,9 @@ class FastScannerEngine:
             # File-level access errors are just as dangerous for reconciliation
             # as directory-level errors: an unseen existing path must not be
             # inferred to be deleted.  Raise only after yielding safe metadata.
-            if self.progress.error_files and not self._cancelled:
+            # In partial mode the errors are persisted per path and the
+            # reconciliation layer excludes those scopes instead.
+            if self.progress.error_files and not self._cancelled and not self._ignore_errors:
                 raise RuntimeError(
                     f"scan incomplete: {self.progress.error_files} filesystem access errors"
                 )
@@ -218,6 +331,55 @@ class FastScannerEngine:
                 f"Scan ended: {file_count:,} files, "
                 f"{self.progress.error_files:,} errors in {elapsed:.1f}s"
             )
+
+    def _is_user_excluded_dir(self, dir_path: Path) -> bool:
+        """Return True when a directory matches a user exclusion pattern.
+
+        A pattern without a path separator matches the directory basename
+        (case-insensitive, fnmatch globs allowed, e.g. ``node_modules`` or
+        ``*.tmp``). A pattern containing a separator is matched against the
+        absolute path and the path relative to the scan root.
+        """
+        if not self._exclude_dir_patterns:
+            return False
+        name = dir_path.name.lower()
+        absolute = str(dir_path)
+        relative = None
+        if self._scan_root is not None:
+            try:
+                relative = str(dir_path.relative_to(self._scan_root))
+            except ValueError:
+                relative = None
+        for pattern in self._exclude_dir_patterns:
+            normalized = pattern.replace(os.sep, "/").rstrip("/")
+            if "/" in normalized:
+                candidates = [absolute.replace(os.sep, "/")]
+                if relative is not None:
+                    candidates.append(relative.replace(os.sep, "/"))
+                if any(fnmatch.fnmatchcase(cand.lower(), normalized) for cand in candidates):
+                    return True
+                # Also honour a parent-directory prefix match (exclude a tree).
+                if any(cand.lower().startswith(normalized + "/") for cand in candidates):
+                    return True
+            elif fnmatch.fnmatchcase(name, normalized):
+                return True
+        return False
+
+    def _is_user_excluded_path(self, path: Path) -> bool:
+        """Return True when a path is inside an explicitly excluded path."""
+        if not self._exclude_paths:
+            return False
+        try:
+            absolute = path.resolve()
+        except OSError:
+            absolute = path
+        for excluded in self._exclude_paths:
+            try:
+                if absolute == excluded or excluded in absolute.parents:
+                    return True
+            except OSError:
+                continue
+        return False
 
     def _should_skip_directory(self, dir_path: Path) -> bool:
         parts = {part.lower() for part in Path(dir_path).parts}
@@ -303,6 +465,10 @@ class FastScannerEngine:
         limit: Optional[int] = None,
         include_system: bool = False,
         progress_callback: Optional[Callable] = None,
+        *,
+        ignore_errors: Optional[bool] = None,
+        exclude_dirs: Optional[Sequence[str]] = None,
+        exclude_paths: Optional[Sequence[str]] = None,
     ) -> Iterator[FileInfo]:
         """Scan paths while preserving cancellation and visibility options."""
         logger.info(
@@ -310,6 +476,11 @@ class FastScannerEngine:
             f"{progress_callback is not None}"
         )
         self._reset_cancel()
+        self._configure(
+            ignore_errors=ignore_errors,
+            exclude_dirs=exclude_dirs,
+            exclude_paths=exclude_paths,
+        )
         for i, path in enumerate(paths):
             if self._cancelled:
                 break

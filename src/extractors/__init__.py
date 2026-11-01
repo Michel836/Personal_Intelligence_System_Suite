@@ -8,7 +8,7 @@ from .manager import ExtractionManager
 
 __all__ = [
     "BaseExtractor",
-    "PDFExtractor", 
+    "PDFExtractor",
     "OfficeExtractor",
     "TextExtractor",
     "ExtractionManager"

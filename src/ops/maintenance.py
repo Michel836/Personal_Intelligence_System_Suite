@@ -214,9 +214,7 @@ class MaintenanceService:
     def semantic_consistency(self) -> dict[str, Any]:
         def fn() -> tuple[str, dict[str, Any], list[str]]:
             from .health import semantic_status
-            status = semantic_status()
-            store_counts = {s["model_key"]: int(s.get("count") or 0) for s in status["stores"]}
-            total_vectors = sum(store_counts.values())
+
             embedded = dirty = 0
             if has_table(self.db, "semantic_state"):
                 with self.db.get_connection() as conn:
@@ -225,12 +223,28 @@ class MaintenanceService:
                         "AND prune=0").fetchone()[0])
                     dirty = int(conn.execute(
                         "SELECT COUNT(*) FROM semantic_state WHERE dirty=1").fetchone()[0])
+
+            store_dir = getattr(self.db, "semantic_store_dir", lambda: None)()
+            if store_dir is None:
+                # The database has never been bound to a vector store. It cannot
+                # be inconsistent with a global store it does not use.
+                return ("OK",
+                        {"store_vectors": 0, "embedded_rows": embedded,
+                         "dirty_rows": dirty, "consistent": True,
+                         "store_checked": False, "store_dir": None, "stores": {}},
+                        [])
+
+            status = semantic_status(store_dir=store_dir)
+            store_counts = {s["model_key"]: int(s.get("count") or 0) for s in status["stores"]}
+            total_vectors = sum(store_counts.values())
             consistent = total_vectors == embedded or total_vectors == 0
             warnings = [] if consistent else [
                 f"store vectors ({total_vectors}) != embedded rows ({embedded})"]
             return ("OK" if consistent else "WARN",
                     {"store_vectors": total_vectors, "embedded_rows": embedded,
-                     "dirty_rows": dirty, "consistent": consistent, "stores": store_counts},
+                     "dirty_rows": dirty, "consistent": consistent,
+                     "store_checked": True, "store_dir": str(store_dir),
+                     "stores": store_counts},
                     warnings)
         return self._run("semantic-consistency", fn)
 

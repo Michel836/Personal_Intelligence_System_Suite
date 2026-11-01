@@ -9,17 +9,17 @@ import threading
 
 class ActivityMonitor:
     """Real-time system activity monitor for sidebar."""
-    
+
     def __init__(self, db_manager, scanner, chat_engine, tag_manager):
         self.db = db_manager
         self.scanner = scanner
         self.chat_engine = chat_engine
         self.tag_manager = tag_manager
         self.last_update = datetime.now()
-    
+
     def render(self):
         """Render the activity monitor in the sidebar."""
-        
+
         # Main container with custom styling
         st.markdown("""
         <style>
@@ -45,7 +45,7 @@ class ActivityMonitor:
         }
         </style>
         """, unsafe_allow_html=True)
-        
+
         # Get current stats with error handling
         try:
             stats = self.db.get_stats()
@@ -57,12 +57,12 @@ class ActivityMonitor:
                 'by_type': {},
                 'scan_duration': 0.0
             }
-        
+
         # Main metrics
         col1, col2 = st.columns(2)
         with col1:
             st.metric(
-                "📁 Files", 
+                "📁 Files",
                 f"{stats.get('total_files', 0):,}",
                 delta=None,
                 help="Total indexed files"
@@ -70,12 +70,12 @@ class ActivityMonitor:
         with col2:
             gb_size = stats.get('total_gb', 0)
             st.metric(
-                "💾 Size", 
+                "💾 Size",
                 f"{gb_size:.1f} GB",
                 delta=None,
                 help="Total data size"
             )
-        
+
         # Scanner Status with animated indicator
         st.markdown("### 🔍 Scanner")
         if self.scanner and hasattr(self.scanner, 'is_running') and self.scanner.is_running:
@@ -86,7 +86,7 @@ class ActivityMonitor:
                 <span style="color: #00ff00; font-weight: bold;">SCANNING</span>
             </div>
             """, unsafe_allow_html=True)
-            
+
             # Progress details
             if hasattr(self.scanner, 'progress'):
                 progress = self.scanner.progress
@@ -94,7 +94,7 @@ class ActivityMonitor:
                     # Progress bar
                     progress_pct = min(progress.scanned_files / 100000, 1.0)
                     st.progress(progress_pct, text=f"{progress.scanned_files:,} files")
-                    
+
                     # Speed indicator
                     col1, col2 = st.columns(2)
                     with col1:
@@ -110,7 +110,7 @@ class ActivityMonitor:
                 <span style="color: #3498db;">Ready to scan</span>
             </div>
             """, unsafe_allow_html=True)
-        
+
         # AI Status
         st.markdown("### 🤖 AI Engine")
         try:
@@ -136,7 +136,7 @@ class ActivityMonitor:
                 <span style="color: #ff0000;">ERROR</span>
             </div>
             """, unsafe_allow_html=True)
-        
+
         # File Type Distribution (mini chart)
         st.markdown("### 📊 File Types")
         if 'by_type' in stats:
@@ -144,7 +144,7 @@ class ActivityMonitor:
                 # Mini bar chart
                 pct = (count / stats['total_files']) * 100 if stats['total_files'] > 0 else 0
                 st.progress(pct / 100, text=f"{file_type}: {count:,}")
-        
+
         # Recent Activity
         st.markdown("### 🕐 Recent Activity")
         recent = self.db.get_recent_files(3)
@@ -153,7 +153,7 @@ class ActivityMonitor:
                 filename = file['filename']
                 if len(filename) > 25:
                     filename = filename[:22] + "..."
-                
+
                 # File type emoji
                 ext = file.get('extension', '').lower()
                 if ext in ['.pdf']:
@@ -168,11 +168,11 @@ class ActivityMonitor:
                     emoji = "📦"
                 else:
                     emoji = "📄"
-                
+
                 st.caption(f"{emoji} {filename}")
         else:
             st.caption("No recent files")
-        
+
         # Quick Actions
         st.markdown("### ⚡ Quick Actions")
         col1, col2 = st.columns(2)
@@ -182,10 +182,10 @@ class ActivityMonitor:
         with col2:
             if st.button("🚀 Scan", use_container_width=True, key="quick_scan"):
                 st.session_state.selected_page = "🚀 Scanner"
-        
+
         # Last update time
         st.caption(f"Last update: {datetime.now().strftime('%H:%M:%S')}")
-        
+
         # Auto-refresh hint
         st.caption("💡 Auto-refreshes with page interactions")
 

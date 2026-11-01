@@ -81,7 +81,7 @@ Double-cliquez sur `START.bat` pour un menu interactif avec toutes les options
 python -m streamlit run launcher.py
 
 # Interface moderne
-python -m streamlit run src/ui/modern_app.py
+python -m src.launcher --profile full
 
 # Interface simple
 python -m streamlit run src/ui/app.py

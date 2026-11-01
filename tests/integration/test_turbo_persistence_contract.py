@@ -98,8 +98,9 @@ def test_turbo_fts_and_sqlite_integrity(turbo: TurboScanner, tmp_path: Path) -> 
         conn.execute("INSERT INTO files_fts(files_fts) VALUES('integrity-check')")
 
 
-def test_modern_app_still_uses_turbo_interface() -> None:
-    """Static caller-contract check (no UI launch)."""
-    text = Path("src/ui/modern_app.py").read_text(encoding="utf-8")
-    assert "from src.scanner.turbo_scan import TurboScanner" in text
-    assert "turbo.turbo_scan(" in text
+def test_legacy_modern_ui_is_removed() -> None:
+    """M022: one canonical UI only; the legacy entrypoint must not reappear."""
+    root = Path(__file__).resolve().parents[2]
+    assert not (root / "src" / "ui" / "modern_app.py").exists()
+    canonical = (root / "src" / "ui" / "app.py").read_text(encoding="utf-8")
+    assert "modern_app" not in canonical

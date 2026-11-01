@@ -1,31 +1,34 @@
 """Semantic search engine using embeddings."""
 
-import numpy as np
-from typing import List, Dict, Any, Optional
-from pathlib import Path
+import contextlib
 import hashlib
 import os
-from cachetools import LRUCache
 import threading
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
+import numpy as np
+from cachetools import LRUCache
 from loguru import logger
+
 from ..core.database import DatabaseManager
 from ..core.perf_config import get_resource_config
-from ..core.validation import validate_semantic_search_params, ValidationError
-from .embeddings import EmbeddingGenerator, EmbeddingGenerationError
+from ..core.validation import ValidationError, validate_semantic_search_params
+from .embeddings import EmbeddingGenerationError, EmbeddingGenerator
 
 
 class SemanticSearchEngine:
     """Semantic search engine for intelligent document retrieval."""
-    
-    def __init__(self, db: Optional[DatabaseManager] = None, embedding_gen=None):
+
+    def __init__(self, db: DatabaseManager | None = None, embedding_gen=None):
         self.db = db or DatabaseManager()
         self.embedding_gen = embedding_gen if embedding_gen is not None else self._resolve_embedding_generator()
-        
+
         # LRU cache for embeddings (max 10,000 embeddings ~ 1GB memory)
         self.embeddings_cache = LRUCache(maxsize=10000)
         self.cache_lock = threading.Lock()
-        
+
         # Query cache for search results (max 1000 queries ~ 100MB)
         self.query_cache = LRUCache(maxsize=1000)
         self.query_cache_lock = threading.Lock()
@@ -35,6 +38,7 @@ class SemanticSearchEngine:
         # Serialises refresh + store reads so concurrent semantic queries and
         # concurrent extraction/refresh cannot observe a half-updated matrix.
         self._store_lock = threading.RLock()
+        self._store_dir_recorded = False
 
         logger.info(f"SemanticSearchEngine initialized. Embeddings available: {self.embedding_gen.is_available()}")
 
@@ -69,6 +73,15 @@ class SemanticSearchEngine:
             self._store = EmbeddingMatrixStore(
                 key, name, dim, base_dir=Path(base) if base else None
             )
+            self._store_dir_recorded = False
+        if not self._store_dir_recorded:
+            # Bind this database to the store that actually serves it, so
+            # maintenance/doctor never compare against an unrelated global store.
+            try:
+                self.db.set_semantic_store_dir(str(self._store.base_dir))
+            except Exception as exc:  # noqa: BLE001 - diagnostics only
+                logger.debug(f"could not record semantic store dir: {exc}")
+            self._store_dir_recorded = True
         return self._store
 
     def _embed_texts(self, texts):
@@ -101,13 +114,20 @@ class SemanticSearchEngine:
                 break
         return total
 
-    def _refresh_semantic(self, store, *, model_key: str, dim: int, batch_size: int = 256):
+    def _refresh_semantic(self, store, *, model_key: str, dim: int, batch_size: int = 256,
+                          max_docs: int | None = None,
+                          should_stop: Callable[[], bool] | None = None,
+                          progress: Callable[[int, int], None] | None = None):
         """Bring the store up to date with the dirty/prune set only.
 
         Complexity is O(changed + pruned), not O(corpus): the DB yields only
         rows whose semantic source changed. Clean marks are written *after* the
         store write, so a crash mid-refresh leaves rows pending and the next
         refresh converges (at-least-once, idempotent).
+
+        ``max_docs`` bounds one call (resumable background job);
+        ``should_stop`` is polled between batches; ``progress`` receives
+        ``(embedded, pruned)`` after every batch.
         """
         if store.matrix is None and store.meta is None and not store.load():
             # Missing/corrupt store: every tracked vector must be rebuilt.
@@ -119,7 +139,13 @@ class SemanticSearchEngine:
         total_pruned = self._apply_prune(store, batch_size)
         total_embedded = 0
         while True:
-            dirty = self.db.semantic_dirty_batch(model_key=model_key, dim=dim, limit=batch_size)
+            if should_stop is not None and should_stop():
+                break
+            if max_docs is not None and total_embedded >= int(max_docs):
+                break
+            remaining = None if max_docs is None else max(1, int(max_docs) - total_embedded)
+            limit = batch_size if remaining is None else min(batch_size, remaining)
+            dirty = self.db.semantic_dirty_batch(model_key=model_key, dim=dim, limit=limit)
             if not dirty:
                 break
             versions = []
@@ -151,7 +177,10 @@ class SemanticSearchEngine:
             store.append(ids, np.vstack(matrix), hashes=[v for _, v in entries])
             self.db.mark_semantic_embedded(entries, model_key=model_key, dim=dim)
             total_embedded += len(entries)
-            if len(dirty) < batch_size:
+            if progress is not None:
+                with contextlib.suppress(Exception):  # never abort on progress
+                    progress(total_embedded, total_pruned)
+            if len(dirty) < limit:
                 break
         return total_embedded, total_pruned
 
@@ -171,10 +200,7 @@ class SemanticSearchEngine:
                 valid.append((doc_id, content))
                 id_map[doc_id] = doc
                 hashes[doc_id] = self._content_hash(content)
-        if store.matrix is None or store.meta is None:
-            loaded = store.load()
-        else:
-            loaded = True
+        loaded = store.load() if store.matrix is None or store.meta is None else True
         if not loaded:
             embeddings = self._embed_texts([t for _, t in valid])
             pairs = [(i, e, hashes[i]) for (i, _), e in zip(valid, embeddings, strict=False) if e is not None]
@@ -199,34 +225,39 @@ class SemanticSearchEngine:
     def is_available(self) -> bool:
         """Check if semantic search is available."""
         return self.embedding_gen.is_available()
-    
-    def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+
+    def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         """Alias for semantic_search for compatibility."""
         return self.semantic_search(query, limit)
 
-    def refresh(self, *, batch_size: int = 256) -> dict[str, Any]:
+    def refresh(self, *, batch_size: int = 256,
+                max_docs: int | None = None,
+                should_stop: Callable[[], bool] | None = None,
+                progress: Callable[[int, int], None] | None = None) -> dict[str, Any]:
         """Bring the persistent store up to date with dirty documents.
 
         Bounded and idempotent; safe to call repeatedly. Returns an aggregate
-        summary (no content). Used by the canonical CLI/API maintenance paths.
+        summary (no content). Used by the canonical CLI/API maintenance paths
+        and by the resumable background embedding job (``max_docs``).
         """
         store = self._get_store()
         if not self.is_available():
             return {"available": False, "embedded": 0, "pruned": 0, "store_count": 0}
         embedded, pruned = self._refresh_semantic(
-            store, model_key=store.model_key, dim=store.dim, batch_size=int(batch_size))
+            store, model_key=store.model_key, dim=store.dim, batch_size=int(batch_size),
+            max_docs=max_docs, should_stop=should_stop, progress=progress)
         store.load()
         return {"available": True, "embedded": int(embedded), "pruned": int(pruned),
                 "store_count": int(store.meta.count) if store.meta else 0}
-    
+
     def semantic_search(
         self,
         query: str,
         limit: int = 20,
         similarity_threshold: float = 0.3
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Perform semantic search on document content with validation and caching."""
-        
+
         # Validate parameters
         try:
             params = validate_semantic_search_params(
@@ -237,7 +268,7 @@ class SemanticSearchEngine:
         except ValidationError as e:
             logger.error(f"Invalid search parameters: {e}")
             return []
-        
+
         if not self.is_available():
             logger.warning("Semantic search not available - falling back to regular search")
             return self.db.search_files(query=params.query, limit=params.limit)
@@ -293,25 +324,25 @@ class SemanticSearchEngine:
             with self.query_cache_lock:
                 self.query_cache[cache_key] = results
             return results
-    
+
     def hybrid_search(
         self,
         query: str,
         limit: int = 20,
         semantic_weight: float = 0.7,
         text_weight: float = 0.3
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Combine semantic and text search for best results."""
-        
+
         # Get semantic results
         semantic_results = self.semantic_search(query, limit=limit)
-        
+
         # Get text search results
         text_results = self.db.search_files(query=query, limit=limit)
-        
+
         # Combine and deduplicate
         combined_results = {}
-        
+
         # Add semantic results
         for doc in semantic_results:
             doc_id = doc['id']
@@ -322,14 +353,14 @@ class SemanticSearchEngine:
                 'text_score': 0.0,
                 'combined_score': score
             }
-        
+
         # Add text results
         for doc in text_results:
             doc_id = doc['id']
-            
+
             # Simple text relevance scoring (can be improved)
             text_score = self._calculate_text_relevance(query, doc)
-            
+
             if doc_id in combined_results:
                 # Update existing result
                 combined_results[doc_id]['text_score'] = text_score
@@ -342,14 +373,14 @@ class SemanticSearchEngine:
                     'text_score': text_score,
                     'combined_score': text_score * text_weight
                 }
-        
+
         # Sort by combined score
         sorted_results = sorted(
             combined_results.values(),
             key=lambda x: x['combined_score'],
             reverse=True
         )
-        
+
         # Format results
         final_results = []
         for result in sorted_results[:limit]:
@@ -361,26 +392,26 @@ class SemanticSearchEngine:
                 'search_type': 'hybrid'
             })
             final_results.append(doc)
-        
+
         logger.info(f"Hybrid search returned {len(final_results)} results")
         return final_results
-    
+
     def find_similar_documents(
         self,
         document_id: int,
         limit: int = 10,
         similarity_threshold: float = 0.5
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Find documents similar to a given document."""
-        
+
         if not self.is_available():
             return []
-        
+
         # Get the reference document
         ref_doc = self._get_document_by_id(document_id)
         if not ref_doc or not ref_doc.get('content_text'):
             return []
-        
+
         # Get or generate embedding for reference document
         ref_embedding = self._get_cached_embedding(document_id)
         if ref_embedding is None:
@@ -388,59 +419,59 @@ class SemanticSearchEngine:
             if ref_embedding is None:
                 return []
             self._cache_embedding(document_id, ref_embedding)
-        
+
         # Find similar documents
         return self.semantic_search_by_embedding(
-            ref_embedding, 
+            ref_embedding,
             limit=limit + 1,  # +1 to exclude the reference document
             similarity_threshold=similarity_threshold,
             exclude_id=document_id
         )
-    
+
     def semantic_search_by_embedding(
         self,
         query_embedding: np.ndarray,
         limit: int = 20,
         similarity_threshold: float = 0.3,
-        exclude_id: Optional[int] = None
-    ) -> List[Dict[str, Any]]:
+        exclude_id: int | None = None
+    ) -> list[dict[str, Any]]:
         """Search using a pre-computed embedding."""
-        
+
         documents = self._get_documents_with_content(limit * 3)
         if not documents:
             return []
-        
+
         doc_embeddings = []
         valid_docs = []
-        
+
         for doc in documents:
             doc_id = doc['id']
-            
+
             # Skip excluded document
             if exclude_id and doc_id == exclude_id:
                 continue
-            
+
             content = doc.get('content_text', '')
             if not content.strip():
                 continue
-            
+
             embedding = self._get_cached_embedding(doc_id)
             if embedding is None:
                 embedding = self.embedding_gen.generate_embedding(content)
                 if embedding is not None:
                     self._cache_embedding(doc_id, embedding)
-            
+
             if embedding is not None:
                 doc_embeddings.append(embedding)
                 valid_docs.append(doc)
-        
+
         # Find similar documents
         similar_indices = self.embedding_gen.find_similar(
             query_embedding,
             doc_embeddings,
             top_k=limit
         )
-        
+
         results = []
         for idx, similarity in similar_indices:
             if similarity >= similarity_threshold:
@@ -448,10 +479,10 @@ class SemanticSearchEngine:
                 doc['semantic_similarity'] = similarity
                 doc['search_type'] = 'semantic'
                 results.append(doc)
-        
+
         return results
-    
-    def _get_documents_with_content(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+
+    def _get_documents_with_content(self, limit: int | None = None) -> list[dict[str, Any]]:
         """Get documents that have extracted content.
 
         ``limit=None`` returns the whole corpus (used by semantic search); an
@@ -471,88 +502,88 @@ class SemanticSearchEngine:
             else:
                 cursor = conn.execute(sql + " LIMIT ?", (int(limit),))
             return [dict(row) for row in cursor]
-    
-    def _get_document_by_id(self, doc_id: int) -> Optional[Dict[str, Any]]:
+
+    def _get_document_by_id(self, doc_id: int) -> dict[str, Any] | None:
         """Get a specific document by ID."""
         with self.db.get_connection() as conn:
             cursor = conn.execute("""
                 SELECT * FROM files WHERE id = ?
             """, (doc_id,))
-            
+
             row = cursor.fetchone()
             return dict(row) if row else None
-    
-    def _calculate_text_relevance(self, query: str, document: Dict[str, Any]) -> float:
+
+    def _calculate_text_relevance(self, query: str, document: dict[str, Any]) -> float:
         """Calculate text relevance score (simple implementation)."""
-        
+
         content = document.get('content_text') or ''
         filename = document.get('filename') or ''
-        
+
         if not content and not filename:
             return 0.0
-        
+
         query_lower = query.lower()
         content_lower = content.lower() if content else ''
         filename_lower = filename.lower() if filename else ''
-        
+
         score = 0.0
-        
+
         # Filename matches (high weight)
         if query_lower in filename_lower:
             score += 1.0
-        
+
         # Content matches
         content_matches = content_lower.count(query_lower)
         if content_matches > 0:
             # Normalize by content length
             content_length = len(content_lower.split())
             score += min(content_matches / max(content_length, 1) * 10, 1.0)
-        
+
         return score
-    
-    def _get_cached_embedding(self, doc_id: int) -> Optional[np.ndarray]:
+
+    def _get_cached_embedding(self, doc_id: int) -> np.ndarray | None:
         """Get cached embedding for document (thread-safe)."""
-        
+
         # Check memory cache with lock
         with self.cache_lock:
             if doc_id in self.embeddings_cache:
                 return self.embeddings_cache[doc_id]
-        
+
         # Check disk cache
         cache_key = f"doc_{doc_id}"
         embedding = self.embedding_gen.load_embedding_cache(cache_key)
-        
+
         if embedding is not None:
             with self.cache_lock:
                 self.embeddings_cache[doc_id] = embedding
-        
+
         return embedding
-    
+
     def _cache_embedding(self, doc_id: int, embedding: np.ndarray) -> None:
         """Cache embedding for document (thread-safe)."""
-        
+
         # Memory cache with lock
         with self.cache_lock:
             self.embeddings_cache[doc_id] = embedding
-        
+
         # Disk cache
         cache_key = f"doc_{doc_id}"
         self.embedding_gen.save_embedding_cache(cache_key, embedding)
-    
-    def get_stats(self) -> Dict[str, Any]:
+
+    def get_stats(self) -> dict[str, Any]:
         """Get semantic search statistics."""
-        
+
         # Count documents with embeddings
         cached_embeddings = len(self.embeddings_cache)
-        
+
         with self.db.get_connection() as conn:
             cursor = conn.execute("""
-                SELECT COUNT(*) FROM files 
-                WHERE content_extracted = 1 
+                SELECT COUNT(*) FROM files
+                WHERE content_extracted = 1
                 AND content_text IS NOT NULL
             """)
             total_with_content = cursor.fetchone()[0]
-        
+
         return {
             'semantic_search_available': self.is_available(),
             'embedding_model': self.embedding_gen.model_name if self.is_available() else None,

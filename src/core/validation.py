@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from enum import Enum
 
+from .paths import default_db_path as _xdg_db_path
 from pydantic import BaseModel, Field, validator, model_validator
 from pydantic_settings import BaseSettings
 
@@ -12,7 +13,7 @@ from pydantic_settings import BaseSettings
 class FileTypeEnum(str, Enum):
     """Valid file types."""
     DOCUMENT = "document"
-    IMAGE = "image" 
+    IMAGE = "image"
     VIDEO = "video"
     AUDIO = "audio"
     ARCHIVE = "archive"
@@ -41,7 +42,7 @@ class SearchParams(BaseModel):
     max_size: Optional[int] = Field(None, ge=0)
     date_from: Optional[datetime] = None
     date_to: Optional[datetime] = None
-    
+
     @model_validator(mode='after')
     def validate_size_range(self):
         """Validate size range."""
@@ -49,7 +50,7 @@ class SearchParams(BaseModel):
             if self.min_size > self.max_size:
                 raise ValueError("min_size cannot be greater than max_size")
         return self
-    
+
     @model_validator(mode='after')
     def validate_date_range(self):
         """Validate date range."""
@@ -64,7 +65,7 @@ class SemanticSearchParams(SearchParams):
     similarity_threshold: float = Field(0.3, ge=0.0, le=1.0)
     semantic_weight: float = Field(0.7, ge=0.0, le=1.0)
     text_weight: float = Field(0.3, ge=0.0, le=1.0)
-    
+
     @model_validator(mode='after')
     def validate_weights(self):
         """Validate weights sum to 1.0."""
@@ -84,7 +85,7 @@ class ScanParams(BaseModel):
     exclude_extensions: Optional[List[str]] = None
     max_workers: int = Field(4, ge=1, le=32)
     batch_size: int = Field(1000, ge=1, le=100000)
-    
+
     @validator('paths')
     def validate_paths(cls, v):
         """Validate paths exist and are accessible."""
@@ -97,7 +98,7 @@ class ScanParams(BaseModel):
                 raise ValueError(f"Path is not a directory: {path_str}")
             valid_paths.append(str(path.resolve()))
         return valid_paths
-    
+
     @validator('include_extensions', 'exclude_extensions')
     def validate_extensions(cls, v):
         """Validate extension format."""
@@ -131,37 +132,37 @@ class FileInfo(BaseModel):
     content_text: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     checksum: Optional[str] = Field(None, pattern=r'^[a-fA-F0-9]{32,64}$')
-    
+
     @validator('path')
     def validate_path(cls, v):
         """Validate path format."""
         if not v or len(v.strip()) == 0:
             raise ValueError("Path cannot be empty")
         return v.strip()
-    
+
     @validator('filename')
     def validate_filename(cls, v):
         """Validate filename."""
         if not v or len(v.strip()) == 0:
             raise ValueError("Filename cannot be empty")
-        
+
         # Check for invalid characters
         invalid_chars = '<>:"|?*'
         for char in invalid_chars:
             if char in v:
                 raise ValueError(f"Filename contains invalid character: {char}")
-        
+
         return v.strip()
 
 
 class DatabaseConfig(BaseSettings):
     """Database configuration with validation."""
-    db_path: str = Field("data/indexes/files.db")
+    db_path: str = Field(default_factory=_xdg_db_path)
     connection_timeout: float = Field(30.0, ge=1.0, le=300.0)
     max_retries: int = Field(3, ge=1, le=10)
     pool_size: int = Field(5, ge=1, le=50)
     cache_size: int = Field(10000, ge=1000, le=100000)
-    
+
     class Config:
         env_prefix = "DB_"
         case_sensitive = False
@@ -175,11 +176,11 @@ class AIConfig(BaseSettings):
     max_retries: int = Field(2, ge=1, le=5)
     embedding_model: str = Field("nomic-embed-text")
     embedding_dim: int = Field(384, ge=128, le=4096)
-    
+
     class Config:
         env_prefix = "AI_"
         case_sensitive = False
-    
+
     @validator('ollama_base_url')
     def validate_url(cls, v):
         """Validate URL format."""
@@ -195,7 +196,7 @@ class PerformanceConfig(BaseSettings):
     cache_ttl: int = Field(3600, ge=60, le=86400)  # seconds
     max_memory_usage: int = Field(8192, ge=1024, le=32768)  # MB
     enable_profiling: bool = False
-    
+
     class Config:
         env_prefix = "PERF_"
         case_sensitive = False
@@ -203,7 +204,7 @@ class PerformanceConfig(BaseSettings):
 
 class ValidationError(Exception):
     """Custom validation error."""
-    
+
     def __init__(self, message: str, field: Optional[str] = None, value: Any = None):
         self.message = message
         self.field = field

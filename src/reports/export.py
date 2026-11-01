@@ -48,10 +48,12 @@ _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def default_export_dir() -> Path:
+    from ..core.paths import export_dir as _export_dir
+
     env = os.environ.get("PIS_EXPORT_DIR")
     if env:
         return Path(env).expanduser()
-    return Path.home() / ".pis-exports"
+    return _export_dir()
 
 
 def safe_component(value: str, *, max_len: int = 64) -> str:

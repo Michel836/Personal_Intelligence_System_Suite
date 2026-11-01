@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import queue
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -38,6 +38,13 @@ class ScanRequest:
     ``limit`` is a diagnostic/bounded traversal only.  Because an unseen path in
     a bounded traversal cannot be interpreted as deleted, any request with a
     limit is persisted without reconciliation and ends as ``CANCELLED``.
+
+    ``ignore_errors`` enables a *safe partial* scan: unreadable subtrees and
+    files are recorded per path, the scan ends ``COMPLETED_WITH_WARNINGS``, and
+    reconciliation only runs over the portions that were fully traversed.
+    ``exclude_dirs`` accepts basename globs (``node_modules``, ``*.tmp``) or
+    path patterns; ``exclude_paths`` accepts absolute paths whose subtrees are
+    never traversed and never reconciled.
     """
 
     root: Path
@@ -45,11 +52,17 @@ class ScanRequest:
     include_system: bool = False
     batch_size: int = 1000
     volume: Optional[VolumeInfo] = None
+    ignore_errors: bool = False
+    exclude_dirs: tuple[str, ...] = ()
+    exclude_paths: tuple[str, ...] = ()
 
 
 @dataclass
 class ScanResult:
-    """Outcome of a scan run. ``status`` is COMPLETED/FAILED/CANCELLED."""
+    """Outcome of a scan run.
+
+    ``status`` is COMPLETED, COMPLETED_WITH_WARNINGS, FAILED or CANCELLED.
+    """
 
     run_id: int
     root_path: str
@@ -61,6 +74,12 @@ class ScanResult:
     renamed: int = 0
     missing: int = 0
     error: Optional[str] = None
+    #: Paths (errors or exclusions) that were not exhaustively traversed.
+    unscanned_scopes: int = 0
+    #: False when reconciliation was skipped (too many scopes / bounded run).
+    reconciled: bool = False
+    #: Human-readable warning lines suitable for the CLI/UI.
+    warnings: list[str] = field(default_factory=list)
 
 
 class ScanSession:
@@ -140,6 +159,9 @@ class ScanService:
             [request.root],
             limit=request.limit,
             include_system=request.include_system,
+            ignore_errors=request.ignore_errors,
+            exclude_dirs=request.exclude_dirs,
+            exclude_paths=request.exclude_paths,
         )
         if not overlap:
             for file_info in stream:
@@ -226,6 +248,9 @@ class ScanService:
             include_system=request.include_system,
             batch_size=request.batch_size,
             volume=request.volume,
+            ignore_errors=request.ignore_errors,
+            exclude_dirs=request.exclude_dirs,
+            exclude_paths=request.exclude_paths,
         )
         result = ScanResult(
             run_id=int(info["run_id"]),
@@ -258,13 +283,12 @@ class ScanService:
                             result.run_id, batch
                         )
                         result.files_seen += len(batch)
-                    result.files_errors = int(
-                        getattr(scanner.progress, "error_files", 0) or 0
-                    )
+                    result.files_errors = self._persist_scopes(scanner, result)
                     self._set_run_error_count(result.run_id, result.files_errors)
                     self.db.cancel_scan(result.run_id)
                     result.status = "CANCELLED"
                     result.error = "scan cancelled; reconciliation skipped"
+                    result.warnings.append(result.error)
                     if progress_callback:
                         progress_callback(result)
                     return result
@@ -275,11 +299,13 @@ class ScanService:
                     if progress_callback:
                         progress_callback(result)
 
-            result.files_errors = int(
-                getattr(scanner.progress, "error_files", 0) or 0
-            )
+            result.files_errors = self._persist_scopes(scanner, result)
             self._set_run_error_count(result.run_id, result.files_errors)
-            if result.files_errors:
+            if getattr(scanner, "traversal_incomplete", False):
+                raise RuntimeError(
+                    "scan incomplete: too many filesystem errors to reconcile safely"
+                )
+            if result.files_errors and not effective_request.ignore_errors:
                 raise RuntimeError(
                     f"scan incomplete: {result.files_errors} filesystem access errors"
                 )
@@ -291,14 +317,26 @@ class ScanService:
                     "bounded scan completed without reconciliation; "
                     "unseen paths were preserved"
                 )
+                result.warnings.append(result.error)
                 if progress_callback:
                     progress_callback(result)
                 return result
 
             rec = self.db.complete_scan(result.run_id)
-            result.status = "COMPLETED"
+            result.status = str(rec.get("status") or "COMPLETED")
             result.renamed = int(rec["renamed"])
             result.missing = int(rec["missing"])
+            result.reconciled = bool(rec.get("reconciled", True))
+            result.unscanned_scopes = int(rec.get("scopes", 0))
+            if result.status == "COMPLETED_WITH_WARNINGS":
+                result.warnings.append(
+                    f"{result.unscanned_scopes} unreadable/excluded scope(s) were "
+                    "not reconciled"
+                )
+            if not result.reconciled:
+                result.warnings.append(
+                    "reconciliation skipped: too many unscanned scopes"
+                )
             if progress_callback:
                 progress_callback(result)
             return result
@@ -306,13 +344,15 @@ class ScanService:
         except Exception as exc:
             result.files_errors = max(
                 result.files_errors,
-                int(getattr(scanner.progress, "error_files", 0) or 0),
+                self._persist_scopes(scanner, result),
             )
             try:
                 self._set_run_error_count(result.run_id, result.files_errors)
             except Exception:
                 pass
-            logger.exception(f"scan failed for {effective_request.root}: {exc}")
+            # One actionable line at WARNING; the traceback is DEBUG only.
+            logger.warning(f"scan failed for {effective_request.root}: {exc}")
+            logger.debug("scan failure details", exc_info=exc)
             try:
                 self.db.fail_scan(result.run_id, str(exc))
             except Exception as fail_exc:
@@ -322,6 +362,15 @@ class ScanService:
             if progress_callback:
                 progress_callback(result)
             return result
+
+    def _persist_scopes(self, scanner, result: ScanResult) -> int:
+        """Persist the scanner's per-path errors/exclusions; return error count."""
+        scopes = list(getattr(getattr(scanner, "progress", None), "errors", []) or [])
+        try:
+            self.db.record_scan_scopes(result.run_id, scopes)
+        except Exception as exc:  # noqa: BLE001 - telemetry must not mask the scan
+            logger.warning(f"could not persist scan scopes: {exc}")
+        return int(getattr(scanner.progress, "error_files", 0) or 0)
 
     def run_turbo(
         self,

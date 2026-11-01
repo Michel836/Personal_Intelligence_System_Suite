@@ -24,12 +24,16 @@ def test_redact_secrets_masks_secret_like_keys() -> None:
 
 
 def test_precedence_explicit_over_environment_over_default(monkeypatch) -> None:
+    from src.core.paths import default_db_path
+
     monkeypatch.setenv("PIS_DB_PATH", "/from/env.db")
     assert resolve_setting("PIS_DB_PATH", explicit="/explicit.db") == ("/explicit.db", "explicit")
     assert resolve_setting("PIS_DB_PATH") == ("/from/env.db", "environment")
     monkeypatch.delenv("PIS_DB_PATH", raising=False)
     value, source = resolve_setting("PIS_DB_PATH")
-    assert source == "default" and value == "data/indexes/files.db"
+    assert source == "default"
+    assert value == default_db_path()
+    assert value.startswith("/")  # absolute, CWD-independent
 
 
 def test_effective_config_is_redacted_and_has_paths(monkeypatch) -> None:

@@ -4,29 +4,90 @@ version = "1.0.0rc1"
 description = "Personal Knowledge Operating System for 36TB of data"
 authors = [{name = "Michel LULEV"}]
 license = {file = "LICENSE"}
+readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["knowledge-management", "local-first", "search", "sqlite", "privacy"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 
-[project.scripts]
-pis = "src.cli:main"
+# Core runtime: the canonical app (scan / extract / lexical+semantic search /
+# reports / API / backup) works with only these. Exact validated versions live
+# in ``constraints.txt`` (``pip install -c constraints.txt -e .``).
+dependencies = [
+    "streamlit>=1.28,<2",
+    "pydantic>=2.5,<3",
+    "pydantic-settings>=2.1,<3",
+    "loguru>=0.7,<1",
+    "python-dotenv>=1.0,<2",
+    "numpy>=1.25,<3",
+    "pandas>=2.1,<3",
+    "plotly>=5.17,<8",
+    "networkx>=3.2,<4",
+    "psutil>=5.9,<8",
+    "cachetools>=5.3,<8",
+    "requests>=2.31,<3",
+    "PyPDF2>=3.0,<4",
+    "python-docx>=1.0,<2",
+    "openpyxl>=3.1,<4",
+    "python-pptx>=0.6,<2",
+    "odfpy>=1.4,<2",
+    "Pillow>=10,<13",
+    "starlette>=0.27,<2",
+    "uvicorn>=0.24,<1",
+    "py7zr>=0.20,<2",
+    "rarfile>=4.0,<5",
+]
 
 [project.optional-dependencies]
+# Local embeddings/LLM (heavy: torch). Install separately on GPU hosts.
+ai = [
+    "sentence-transformers>=2.2",
+    "transformers>=4.36",
+    "torch>=2.0",
+    "ollama>=0.1.7",
+]
+# OCR and image/PDF rasterisation (also needs system tesseract/poppler).
+ocr = [
+    "pytesseract>=0.3.10",
+    "pdf2image>=1.16",
+]
+# Higher-fidelity extraction and PDF report export.
+docs = [
+    "pdfplumber>=0.11",
+    "markdown2>=2.4",
+    "eml_parser>=1.17",
+    "weasyprint>=60",
+]
+cloud = ["dropbox>=11.36"]
+postgres = [
+    "psycopg[binary]>=3.1",
+    "pgvector>=0.2",
+    "SQLAlchemy>=2.0",
+    "alembic>=1.12",
+]
+mcp = ["mcp>=0.1"]
+magic = ["python-magic>=0.4.27"]
 dev = [
     "pytest>=7.4.3",
     "pytest-asyncio>=0.21.1",
     "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12",
     "black>=23.11.0",
     "ruff>=0.1.7",
     "mypy>=1.7.1",
+    "isort>=5.12",
     "pre-commit>=3.6.0",
 ]
+
+[project.scripts]
+pis = "src.cli:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -35,6 +96,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+[tool.setuptools.package-data]
+"src.intel" = ["*.json"]
 
 [tool.black]
 line-length = 88
