@@ -52,21 +52,42 @@ healthy() {
 }
 
 stop_profile() {
-    local stopped=0 pid pids p
+    local stopped=0 pid cmd pids p
+
+    # 1. PID file written by this wrapper (setsid => PID == PGID). Verify the
+    #    command line so a recycled PID is never killed by mistake.
     if [ -f "$PID_FILE" ]; then
         pid="$(cat "$PID_FILE" 2>/dev/null || true)"
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            # The wrapper starts the launcher under setsid: PID == PGID.
-            kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-            stopped=1
+            cmd="$(ps -o args= -p "$pid" 2>/dev/null || true)"
+            case "$cmd" in
+                *"src.launcher --profile $PROFILE"*)
+                    kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+                    stopped=1
+                    ;;
+            esac
         fi
         rm -f "$PID_FILE"
     fi
-    # Fallback: stop the Streamlit app listening on the profile's port.
-    pids="$(pgrep -f "src/ui/app.py --server.port $PREFERRED_PORT" 2>/dev/null || true)"
+
+    # 2. Fallback: the process actually listening on the profile's port.
+    if command -v ss >/dev/null 2>&1; then
+        pids="$(ss -ltnpH "sport = :$PREFERRED_PORT" 2>/dev/null \
+            | grep -o 'pid=[0-9]*' | cut -d= -f2 || true)"
+    elif command -v fuser >/dev/null 2>&1; then
+        pids="$(fuser -n tcp "$PREFERRED_PORT" 2>/dev/null || true)"
+    else
+        pids=""
+    fi
     for p in $pids; do
-        kill "$p" 2>/dev/null && stopped=1 || true
+        [ "$p" = "$$" ] && continue
+        case "$(ps -o comm= -p "$p" 2>/dev/null || true)" in
+            python*|streamlit*)
+                kill "$p" 2>/dev/null && stopped=1 || true
+                ;;
+        esac
     done
+
     if [ "$stopped" = 1 ]; then
         notify "Profil ${PROFILE^^} arrêté."
     else
