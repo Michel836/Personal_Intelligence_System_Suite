@@ -1,13 +1,15 @@
 """Enhanced UI components with loading states and better feedback."""
 
-import streamlit as st
-import time
-import threading
-from typing import Any, Callable, Optional, Dict, List
-from contextlib import contextmanager
 import queue
+import threading
+import time
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, List, Optional
+
+import streamlit as st
 
 from ..core.monitoring import metrics_collector
+from ..utils.os_open import reveal_path
 
 
 class LoadingState:
@@ -350,25 +352,11 @@ class InteractiveFileTable:
                     st.info("No text content available")
 
     def _open_file_location(self, file_info: Dict[str, Any]):
-        """Open file location in system explorer."""
-        import subprocess
-        import sys
-        from pathlib import Path
-
-        try:
-            file_path = Path(file_info['path'])
-
-            if sys.platform == "win32":
-                subprocess.run(["explorer", "/select,", str(file_path)], check=True)
-            elif sys.platform == "darwin":
-                subprocess.run(["open", "-R", str(file_path)], check=True)
-            else:
-                subprocess.run(["xdg-open", str(file_path.parent)], check=True)
-
-            st.success(f"📂 Opened location for {file_info['filename']}")
-
-        except Exception as e:
-            st.error(f"Failed to open location: {str(e)}")
+        """Reveal the file in the OS file manager (cross-platform, best effort)."""
+        if reveal_path(file_info.get("path", "")):
+            st.success(f"📂 Opened location for {file_info.get('filename', 'file')}")
+        else:
+            st.warning(f"Impossible d'ouvrir le dossier : {file_info.get('path', '')}")
 
     def _bulk_open_locations(self, files: List[Dict[str, Any]]):
         """Open multiple file locations."""

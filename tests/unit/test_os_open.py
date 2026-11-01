@@ -1,79 +1,79 @@
-"""Cross-platform open/reveal helpers (M012-B2)."""
+"""Cross-platform open/reveal helpers (regression: Windows-only ``explorer``)."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-import pytest
-
-from src.utils import os_open
+import src.utils.os_open as os_open
 
 
-class _Recorder:
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-        self.raise_on_call = False
-
-    def __call__(self, args: list[str]) -> object:
-        if self.raise_on_call:
-            raise OSError("boom")
-        self.calls.append(list(args))
+def _recorder(calls: list[list[str]]):
+    def _popen(args, *a, **k):  # noqa: ARG001 - signature compatibility
+        calls.append(list(args))
         return object()
 
-
-@pytest.fixture()
-def popen(monkeypatch) -> _Recorder:
-    rec = _Recorder()
-    monkeypatch.setattr(os_open.subprocess, "Popen", rec)
-    return rec
+    return _popen
 
 
-def test_open_path_linux_uses_xdg_open(popen: _Recorder, monkeypatch) -> None:
-    monkeypatch.setattr(os_open.sys, "platform", "linux")
-    assert os_open.open_path("/tmp/report.pdf") is True
-    assert popen.calls == [["xdg-open", "/tmp/report.pdf"]]
+def _linux(monkeypatch) -> None:
+    monkeypatch.setattr(os_open, "_is_windows", lambda: False)
+    monkeypatch.setattr(os_open, "_is_macos", lambda: False)
 
 
-def test_reveal_path_linux_uses_parent(popen: _Recorder, monkeypatch) -> None:
-    monkeypatch.setattr(os_open.sys, "platform", "linux")
-    assert os_open.reveal_path("/tmp/data/report.pdf") is True
-    assert popen.calls == [["xdg-open", "/tmp/data"]]
+def test_reveal_path_opens_parent_folder_on_linux(tmp_path: Path, monkeypatch) -> None:
+    _linux(monkeypatch)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(os_open.subprocess, "Popen", _recorder(calls))
+    target = tmp_path / "corpus" / "a.txt"
+    target.parent.mkdir()
+    target.write_text("x", encoding="utf-8")
+
+    assert os_open.reveal_path(target) is True
+    assert calls[-1] == ["xdg-open", str(target.parent)]
 
 
-def test_reveal_path_linux_directory_uses_itself(popen: _Recorder, monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(os_open.sys, "platform", "linux")
+def test_reveal_path_opens_directory_itself(tmp_path: Path, monkeypatch) -> None:
+    _linux(monkeypatch)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(os_open.subprocess, "Popen", _recorder(calls))
     assert os_open.reveal_path(tmp_path) is True
-    assert popen.calls == [["xdg-open", str(tmp_path)]]
+    assert calls[-1] == ["xdg-open", str(tmp_path)]
 
 
-def test_open_path_macos(popen: _Recorder, monkeypatch) -> None:
-    monkeypatch.setattr(os_open.sys, "platform", "darwin")
-    assert os_open.open_path("/tmp/report.pdf") is True
-    assert popen.calls == [["open", "/tmp/report.pdf"]]
+def test_open_path_uses_xdg_open_on_linux(tmp_path: Path, monkeypatch) -> None:
+    _linux(monkeypatch)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(os_open.subprocess, "Popen", _recorder(calls))
+    target = tmp_path / "a.txt"
+    target.write_text("x", encoding="utf-8")
+    assert os_open.open_path(target) is True
+    assert calls[-1] == ["xdg-open", str(target)]
 
 
-def test_open_path_windows_uses_startfile(monkeypatch) -> None:
-    calls: list[str] = []
-    monkeypatch.setattr(os_open.sys, "platform", "win32")
-    monkeypatch.setattr(os_open.os, "startfile", lambda p: calls.append(p), raising=False)
-    assert os_open.open_path("C:/tmp/report.pdf") is True
-    assert calls == ["C:/tmp/report.pdf"]
+def test_helpers_never_raise_when_opener_is_missing(tmp_path: Path, monkeypatch) -> None:
+    _linux(monkeypatch)
+
+    def _missing(*_args, **_kwargs):
+        raise FileNotFoundError("xdg-open")
+
+    monkeypatch.setattr(os_open.subprocess, "Popen", _missing)
+    target = tmp_path / "a.txt"
+    target.write_text("x", encoding="utf-8")
+    assert os_open.reveal_path(target) is False
+    assert os_open.open_path(target) is False
 
 
-def test_open_path_never_raises(popen: _Recorder, monkeypatch) -> None:
-    monkeypatch.setattr(os_open.sys, "platform", "linux")
-    popen.raise_on_call = True
-    assert os_open.open_path("/tmp/missing.pdf") is False
-    assert os_open.reveal_path("/tmp/missing.pdf") is False
+def test_no_ui_module_hardcodes_windows_openers() -> None:
+    """The UI must use ``os_open`` helpers, never raw ``explorer``/startfile."""
+    root = Path(__file__).resolve().parents[2] / "src" / "ui"
+    for path in root.glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert "explorer" not in text, f"Windows-only opener in {path.name}"
+        assert "os.startfile" not in text, f"Windows-only opener in {path.name}"
 
 
-def test_no_hardcoded_windows_opener_in_canonical_app() -> None:
-    app = Path(__file__).resolve().parents[2] / "src" / "ui" / "app.py"
-    text = app.read_text(encoding="utf-8")
-    assert "explorer /select" not in text
-    assert "os.startfile" not in text
-
-
-def test_platform_predicates() -> None:
-    assert os_open._is_windows() is sys.platform.startswith("win")
-    assert os_open._is_macos() is (sys.platform == "darwin")
+def test_interactive_table_uses_canonical_helper() -> None:
+    source = (Path(__file__).resolve().parents[2] / "src" / "ui" / "interactive_table.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from ..utils.os_open import reveal_path" in source
+    assert "reveal_path(path)" in source

@@ -1,11 +1,14 @@
 """Interactive table component with sorting, filtering, and advanced features."""
 
-import streamlit as st
-import pandas as pd
+import math
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
-import math
+from typing import Any, Dict, List
+
+import pandas as pd
+import streamlit as st
+
+from ..utils.os_open import reveal_path
 
 
 class InteractiveTable:
@@ -397,11 +400,8 @@ class InteractiveTable:
                 with action_cols[1]:
                     if st.button("📂", key=f"{self.key_prefix}_open_{idx}", help="Open location"):
                         path = getattr(full_row, 'path', '')
-                        if path:
-                            import subprocess
-                            import os
-                            folder = os.path.dirname(path)
-                            subprocess.Popen(f'explorer "{folder}"')
+                        if path and not reveal_path(path):
+                            st.warning(f"Impossible d'ouvrir le dossier : {path}")
 
             st.divider()
 

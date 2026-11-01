@@ -1,16 +1,15 @@
 """Advanced search interface with modern UX."""
 
-import streamlit as st
-import pandas as pd
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Set
-import json
-from datetime import datetime, timedelta
-import subprocess
-import tempfile
-import os
+from typing import Any, Dict, List, Set
 
-from src.ui.components import UIComponents, SmartSuggestions
+import pandas as pd
+import streamlit as st
+
+from src.ui.components import SmartSuggestions, UIComponents
+from src.utils.os_open import open_path, reveal_path
+
 
 class AdvancedSearchInterface:
     """Modern search interface with enhanced UX."""
@@ -443,26 +442,18 @@ class AdvancedSearchInterface:
                 st.error(f"Preview error: {e}")
 
     def _open_file_location(self, file_path: str):
-        """Open file location in explorer."""
-        try:
-            if os.name == 'nt':  # Windows
-                subprocess.run(['explorer', '/select,', file_path])
-            elif os.name == 'posix':  # macOS/Linux
-                subprocess.run(['open', '-R', file_path])
+        """Reveal the file in the OS file manager (cross-platform, best effort)."""
+        if reveal_path(file_path):
             st.success("📂 Folder opened!")
-        except Exception as e:
-            st.error(f"Could not open folder: {e}")
+        else:
+            st.warning(f"Impossible d'ouvrir le dossier : {file_path}")
 
     def _open_file(self, file_path: str):
-        """Open file with default application."""
-        try:
-            if os.name == 'nt':  # Windows
-                os.startfile(file_path)
-            elif os.name == 'posix':  # macOS/Linux
-                subprocess.run(['open', file_path])
+        """Open the file with the OS default application (best effort)."""
+        if open_path(file_path):
             st.success("🔗 File opened!")
-        except Exception as e:
-            st.error(f"Could not open file: {e}")
+        else:
+            st.warning(f"Impossible d'ouvrir le fichier : {file_path}")
 
     def _add_to_favorites(self, file_path: str):
         """Add file to favorites."""
