@@ -198,3 +198,56 @@ def test_env_exclusions_are_honoured(tmp_path: Path, monkeypatch) -> None:
     states = _states(DatabaseManager(tmp_path / "env.db"))
     assert str(corpus / "locked2" / "locked2.txt") not in states
     assert str(corpus / "locked1" / "locked1.txt") in states
+
+
+def test_scope_overflow_completes_without_reconciliation(tmp_path: Path, monkeypatch) -> None:
+    """More unscanned scopes than the safety cap must not fail the whole scan.
+
+    The indexed metadata is kept, the run ends COMPLETED_WITH_WARNINGS, and
+    reconciliation is skipped entirely (no file is ever marked MISSING).
+    """
+    corpus = _make_corpus(tmp_path)
+    db = DatabaseManager(tmp_path / "index.db")
+    service = ScanService(db)
+    assert service.run(ScanRequest(root=corpus)).status == "COMPLETED"
+
+    # Force the overflow branch with a tiny cap.
+    monkeypatch.setattr("src.scanner.fast_engine.MAX_RECORDED_ERRORS", 2)
+    locked = [corpus / name for name in ("locked1", "locked2", "locked3")]
+    for path in locked:
+        _lock(path)
+    try:
+        (corpus / "ok" / "later.txt").write_text("later", encoding="utf-8")
+        result = service.run(ScanRequest(root=corpus, ignore_errors=True))
+    finally:
+        for path in locked:
+            _unlock(path)
+
+    assert result.status == "COMPLETED_WITH_WARNINGS"
+    assert result.files_errors == 3
+    assert result.reconciled is False
+    assert any("reconciliation skipped" in warning for warning in result.warnings)
+    states = _states(db)
+    for name in ("locked1", "locked2", "locked3"):
+        assert states[str(corpus / name / f"{name}.txt")] == "ACTIVE"
+    assert states[str(corpus / "ok" / "later.txt")] == "ACTIVE"
+
+
+def test_scope_overflow_strict_still_fails(tmp_path: Path, monkeypatch) -> None:
+    corpus = _make_corpus(tmp_path)
+    db = DatabaseManager(tmp_path / "index.db")
+    service = ScanService(db)
+    assert service.run(ScanRequest(root=corpus)).status == "COMPLETED"
+
+    monkeypatch.setattr("src.scanner.fast_engine.MAX_RECORDED_ERRORS", 2)
+    locked = [corpus / name for name in ("locked1", "locked2", "locked3")]
+    for path in locked:
+        _lock(path)
+    try:
+        result = service.run(ScanRequest(root=corpus, ignore_errors=False))
+    finally:
+        for path in locked:
+            _unlock(path)
+
+    assert result.status == "FAILED"
+    assert set(_states(db).values()) == {"ACTIVE"}

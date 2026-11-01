@@ -9,8 +9,11 @@ is canonical; the source corpus is never modified.
 * **Safe partial scans.** Unreadable subtrees no longer abort a scan by
   default: per-path evidence is stored in `scan_errors`, the run ends
   `COMPLETED_WITH_WARNINGS`, and reconciliation only covers fully traversed
-  scopes. `--strict` restores fail-closed behaviour; `--exclude` /
-  `--exclude-path` add explicit exclusions.
+  scopes. Beyond the safety cap (500 unscanned scopes) the run still completes
+  with warnings but reconciliation is skipped entirely — a scan is never marked
+  `FAILED` just because the filesystem had many protected areas. `--strict`
+  restores fail-closed behaviour; `--exclude` / `--exclude-path` add explicit
+  exclusions.
 * **Stable CLI exit codes** (`0` complete, `3` partial/cancelled, `2` failure)
   and the resolved database path on every command (`--json` → `_meta`).
 * **Packaging fixed.** `pyproject.toml` declares the 22 core runtime

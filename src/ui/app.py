@@ -2491,6 +2491,7 @@ def _scan_worker(db: Any, paths: list[str], cancel_event: Any, update_queue: Any
                     "error": result.error,
                     "warnings": result.warnings,
                     "unscanned_scopes": result.unscanned_scopes,
+                    "reconciled": result.reconciled,
                     "message": result.error or result.status,
                 }
             )
@@ -2624,12 +2625,21 @@ def _render_scanner_progress() -> None:
             f"Manquants : {int(update.get('missing', 0) or 0):,}."
         )
     elif status == "completed_with_warnings":
-        st.warning(
-            "Scan terminé avec avertissements. La réconciliation a été limitée "
-            "aux sous-arbres intégralement parcourus ; les fichiers situés sous "
-            f"un dossier illisible ou exclu restent inchangés. "
-            f"Périmètres non parcourus : {int(update.get('unscanned_scopes', 0) or 0):,}."
-        )
+        reconciled = bool(update.get("reconciled", True))
+        if reconciled:
+            st.warning(
+                "Scan terminé avec avertissements. La réconciliation a été limitée "
+                "aux sous-arbres intégralement parcourus ; les fichiers situés sous "
+                f"un dossier illisible ou exclu restent inchangés. "
+                f"Périmètres non parcourus : {int(update.get('unscanned_scopes', 0) or 0):,}."
+            )
+        else:
+            st.warning(
+                "Scan terminé avec avertissements. Trop de périmètres n'ont pas pu "
+                "être parcourus : la réconciliation a été entièrement annulée. "
+                "Aucun fichier n'a été marqué manquant ; les fichiers lisibles ont "
+                "bien été indexés."
+            )
         for warning in update.get("warnings") or []:
             st.caption(f"• {warning}")
     elif status == "cancelled":

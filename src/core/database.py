@@ -1120,7 +1120,7 @@ class DatabaseManager:
             conn.commit()
             return int(cursor.rowcount)
 
-    def complete_scan(self, run_id: int) -> dict:
+    def complete_scan(self, run_id: int, *, reconcile: bool = True) -> dict:
         """Mark a run COMPLETED (or COMPLETED_WITH_WARNINGS) and reconcile.
 
         Reconciliation only happens for a RUNNING run whose volume is currently
@@ -1161,12 +1161,17 @@ class DatabaseManager:
         scopes = self.scan_scopes(run_id)
         # Beyond this bound, dynamic SQL gets unwieldy and the safest contract is
         # to skip reconciliation entirely rather than risk marking a live file
-        # MISSING.
-        reconcile = len(scopes) <= 200
-        status = "COMPLETED_WITH_WARNINGS" if scopes else "COMPLETED"
+        # MISSING. The caller can also force ``reconcile=False`` when the
+        # scanner recorded more scopes than it could safely exclude.
+        can_reconcile = bool(reconcile) and len(scopes) <= 200
+        status = (
+            "COMPLETED_WITH_WARNINGS"
+            if scopes or not can_reconcile
+            else "COMPLETED"
+        )
         self._finish_run(run_id, status)
         with self.get_connection() as conn:
-            if reconcile:
+            if can_reconcile:
                 renamed = self._associate_renames(conn, run_id, scopes)
                 missing = self._mark_missing(conn, run_id, scopes)
             else:
@@ -1181,7 +1186,7 @@ class DatabaseManager:
             "missing": missing,
             "status": status,
             "scopes": len(scopes),
-            "reconciled": reconcile,
+            "reconciled": can_reconcile,
         }
 
     @staticmethod

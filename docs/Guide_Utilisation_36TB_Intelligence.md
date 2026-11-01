@@ -337,7 +337,13 @@ Un dossier illisible **n'annule plus** le scan. L'application :
 1. enregistre chaque erreur par chemin (`scan_errors`) ;
 2. termine en **`COMPLETED_WITH_WARNINGS`** (code 3) ;
 3. réconcilie uniquement les sous-arbres **intégralement parcourus** ;
-4. laisse les fichiers situés sous un dossier illisible ou exclu **inchangés**.
+4. laisse les fichiers situés sous un dossier illisible ou exclu **inchangés** ;
+5. si le nombre de périmètres non parcourus dépasse la limite de sécurité
+   (500), termine quand même en **`COMPLETED_WITH_WARNINGS`** mais **annule
+   entièrement la réconciliation** : aucun fichier n'est marqué manquant. Un
+   scan de `/` tombe typiquement dans ce cas (zones système protégées) ; pour
+   bénéficier de la réconciliation, scannez un sous-arbre (`/home`) ou ajoutez
+   des exclusions.
 
 ```bash
 pis scan ~/Documents
@@ -688,6 +694,7 @@ si les embeddings sont absents). Aucune écriture, aucun scan.
 | `Permission denied` pendant le scan | Sous-arbre illisible | Mode sûr par défaut ; sinon `--ignore-errors`, `--exclude`, ou lancer avec des droits adaptés |
 | `scan FAILED` (code 2) | `--strict` + accès refusé | Relancer sans `--strict` ou exclure le sous-arbre |
 | `scan COMPLETED_WITH_WARNINGS` (code 3) | Périmètres non parcourus | Normal en mode sûr ; vérifier `unscanned_scopes` |
+| « réconciliation entièrement annulée » | Plus de 500 périmètres illisibles/exclus (typique d'un scan de `/`) | Comportement sûr : les fichiers lisibles sont indexés, aucun `MISSING`. Scanner un sous-arbre (`/home`) ou exclure les zones système pour réconcilier |
 | `semantic=0.0%` | Aucun document extrait ou extrait trop court | `pis extract`, puis `pis embed` |
 | `NOT_CONFIGURED` pour l'embedding | Extra `ai` absent | `pip install -c constraints.txt -e ".[ai]"` |
 | Recherche sémantique sans résultat | Couverture insuffisante | `pis embed`, vérifier `pis embed --status` |

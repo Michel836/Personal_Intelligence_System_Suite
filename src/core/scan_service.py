@@ -301,13 +301,23 @@ class ScanService:
 
             result.files_errors = self._persist_scopes(scanner, result)
             self._set_run_error_count(result.run_id, result.files_errors)
-            if getattr(scanner, "traversal_incomplete", False):
-                raise RuntimeError(
-                    "scan incomplete: too many filesystem errors to reconcile safely"
-                )
+            traversal_incomplete = bool(
+                getattr(scanner, "traversal_incomplete", False)
+            )
             if result.files_errors and not effective_request.ignore_errors:
                 raise RuntimeError(
                     f"scan incomplete: {result.files_errors} filesystem access errors"
+                )
+            if traversal_incomplete and not effective_request.ignore_errors:
+                raise RuntimeError(
+                    "scan incomplete: too many unscanned scopes to reconcile safely"
+                )
+            if traversal_incomplete:
+                # Safe partial mode: keep the indexed metadata and complete with
+                # warnings, but never reconcile (some subtrees could not even be
+                # recorded individually).
+                result.warnings.append(
+                    "reconciliation skipped: too many unscanned scopes"
                 )
 
             if effective_request.limit is not None:
@@ -322,7 +332,9 @@ class ScanService:
                     progress_callback(result)
                 return result
 
-            rec = self.db.complete_scan(result.run_id)
+            rec = self.db.complete_scan(
+                result.run_id, reconcile=not traversal_incomplete
+            )
             result.status = str(rec.get("status") or "COMPLETED")
             result.renamed = int(rec["renamed"])
             result.missing = int(rec["missing"])
@@ -334,9 +346,9 @@ class ScanService:
                     "not reconciled"
                 )
             if not result.reconciled:
-                result.warnings.append(
-                    "reconciliation skipped: too many unscanned scopes"
-                )
+                message = "reconciliation skipped: too many unscanned scopes"
+                if message not in result.warnings:
+                    result.warnings.append(message)
             if progress_callback:
                 progress_callback(result)
             return result
