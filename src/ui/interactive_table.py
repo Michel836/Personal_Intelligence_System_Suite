@@ -167,19 +167,63 @@ class InteractiveTable:
         # Statistics bar
         self._render_statistics(filtered_df, len(df))
 
-        # Pagination
-        total_pages = math.ceil(len(display_df) / page_size)
+        # Pagination: rows-per-page selector + explicit Prev/Next controls.
+        # ``page_size`` is the caller's default; the operator can enlarge the
+        # page to see all results at once (bounded by the search limit).
+        page_size_options = [20, 50, 100, 200]
+        default_size = page_size if page_size in page_size_options else 20
+        page_size = int(st.selectbox(
+            "Résultats par page",
+            page_size_options,
+            index=page_size_options.index(default_size),
+            key=f"{self.key_prefix}_page_size",
+        ))
+
+        total_pages = max(1, math.ceil(len(display_df) / page_size))
+        page_key = f"{self.key_prefix}_page"
+        pending_key = f"{self.key_prefix}_page_pending"
+        # Buttons write a *non-widget* pending value; applying it here (before the
+        # slider is instantiated) is the only mutation Streamlit allows for a
+        # widget-backed key.
+        pending = st.session_state.pop(pending_key, None)
+        if pending is not None:
+            st.session_state[page_key] = int(pending)
+        if page_key not in st.session_state:
+            st.session_state[page_key] = 1
+        # Clamp when filters or the page size change the number of pages.
+        st.session_state[page_key] = max(
+            1, min(int(st.session_state[page_key]), total_pages)
+        )
 
         if total_pages > 1:
-            page_cols = st.columns([1, 3, 1])
+            page_cols = st.columns([1, 2, 1, 1])
+            with page_cols[0]:
+                if st.button(
+                    "← Précédent",
+                    key=f"{self.key_prefix}_prev",
+                    disabled=st.session_state[page_key] <= 1,
+                    use_container_width=True,
+                ):
+                    st.session_state[pending_key] = int(st.session_state[page_key]) - 1
+                    st.rerun()
             with page_cols[1]:
-                current_page = st.slider(
+                current_page = int(st.slider(
                     "Page",
                     1,
                     total_pages,
-                    1,
-                    key=f"{self.key_prefix}_page"
-                )
+                    key=page_key,
+                ))
+            with page_cols[2]:
+                if st.button(
+                    "Suivant →",
+                    key=f"{self.key_prefix}_next",
+                    disabled=st.session_state[page_key] >= total_pages,
+                    use_container_width=True,
+                ):
+                    st.session_state[pending_key] = int(st.session_state[page_key]) + 1
+                    st.rerun()
+            with page_cols[3]:
+                st.caption(f"{total_pages} page(s)")
         else:
             current_page = 1
 
@@ -205,9 +249,31 @@ class InteractiveTable:
                 column_config=self._get_column_config()
             )
 
-        # Page info
+        # Page info + the same controls at the bottom, next to the caption.
         if total_pages > 1:
-            st.caption(f"📄 Page {current_page} of {total_pages} | Showing {start_idx+1}-{end_idx} of {len(filtered_df)} filtered results")
+            st.caption(
+                f"📄 Page {current_page} of {total_pages} | "
+                f"Showing {start_idx+1}-{end_idx} of {len(filtered_df)} filtered results"
+            )
+            bottom_cols = st.columns([1, 1, 4])
+            with bottom_cols[0]:
+                if st.button(
+                    "← Précédent",
+                    key=f"{self.key_prefix}_prev_bottom",
+                    disabled=current_page <= 1,
+                    use_container_width=True,
+                ):
+                    st.session_state[pending_key] = current_page - 1
+                    st.rerun()
+            with bottom_cols[1]:
+                if st.button(
+                    "Suivant →",
+                    key=f"{self.key_prefix}_next_bottom",
+                    disabled=current_page >= total_pages,
+                    use_container_width=True,
+                ):
+                    st.session_state[pending_key] = current_page + 1
+                    st.rerun()
 
         # Return selected items if any
         return st.session_state.get(f"{self.key_prefix}_selected", [])

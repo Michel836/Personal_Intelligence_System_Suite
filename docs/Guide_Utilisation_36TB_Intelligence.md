@@ -442,6 +442,21 @@ Filtres disponibles : `--extension`, `--document-kind`, `--language`,
 Dans l'interface, la page **Search** ouvre le fichier ou son dossier, et la page
 **Advanced Search** ajoute tri, suggestions et filtres.
 
+### Pagination des résultats
+
+Les résultats ne sont pas des pages web séparées : la même table affiche la page
+sélectionnée.
+
+- **Résultats par page** : 20 / 50 / 100 / 200 (choisir 100 ou 200 pour voir
+  tous les résultats d'un coup).
+- **← Précédent / Suivant →** ou le curseur **Page** pour changer de page ; les
+  commandes sont disponibles en haut **et** en bas de la liste.
+- **Max Results** (au-dessus des résultats) contrôle le nombre total de
+  résultats récupérés par la recherche (10 à 1000). Pour aller au-delà de 100,
+  augmentez cette valeur avant de lancer la recherche.
+- Le panneau **👁️ Détails** s'ouvre sous la ligne sélectionnée, puis se ferme
+  avec **❌ Fermer**.
+
 ---
 
 ## 13. Couverture sémantique et embeddings de fond
