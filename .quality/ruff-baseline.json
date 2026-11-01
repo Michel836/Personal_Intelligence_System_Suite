@@ -19,7 +19,6 @@
     "scripts/ollama/test_ollama_connection.py": 20,
     "scripts/ollama/test_ollama_embeddings.py": 19,
     "scripts/piss_4tb_showcase.py": 19,
-    "scripts/quality_gate.py": 10,
     "scripts/quick_scan.py": 9,
     "scripts/run_validation.py": 3,
     "scripts/setup_postgres.py": 3,
@@ -148,7 +147,7 @@
     "tests/unit/test_scan_runtime_hardening.py": 4,
     "tests/unit/test_usage_accounting.py": 2
   },
-  "generated_at": "2026-11-01T18:04:06+00:00",
+  "generated_at": "2026-11-01T19:55:26+00:00",
   "python": "3.11.15",
-  "total": 2346
+  "total": 2336
 }

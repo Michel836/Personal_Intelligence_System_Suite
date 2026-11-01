@@ -1,6 +1,6 @@
 # Release Candidate — Install, Operate and Limits (M021 + M022)
 
-This is the operator guide for the **v1.0.0-rc1** release candidate of 36TB
+This is the operator guide for the **v1.0.0-rc2** release candidate of 36TB
 Intelligence. It describes the canonical path only: one Streamlit app, one CLI
 (`pis`), one loopback API and one SQLite database.
 

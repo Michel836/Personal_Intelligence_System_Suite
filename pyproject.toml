@@ -1,6 +1,6 @@
 [project]
 name = "36tb-intelligence"
-version = "1.0.0rc1"
+version = "1.0.0rc2"
 description = "Personal Knowledge Operating System for 36TB of data"
 authors = [{name = "Michel LULEV"}]
 license = {file = "LICENSE"}
@@ -146,6 +146,8 @@ ignore = [
 
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["F401"]
+"scripts/build_user_guide.py" = ["T201"]
+"scripts/quality_gate.py" = ["T201"]
 
 [tool.mypy]
 python_version = "3.11"

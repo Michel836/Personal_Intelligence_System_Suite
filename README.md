@@ -14,7 +14,7 @@
 > below that describe the old Windows-first / `modern_app` / PostgreSQL stack
 > are historical and kept for traceability only.
 
-## 🚦 Release Candidate (v1.0.0-rc1)
+## 🚦 Release Candidate (v1.0.0-rc2)
 
 M013–M020 are consolidated and validated as a release candidate. Start here:
 

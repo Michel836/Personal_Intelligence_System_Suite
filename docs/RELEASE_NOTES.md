@@ -1,4 +1,4 @@
-# Release Notes — v1.0.0-rc1 (M013–M020)
+# Release Notes — v1.0.0-rc2 (M013–M022)
 
 Mono-user, local-first personal intelligence system. This release candidate
 consolidates eleven missions (M013–M020) into one canonical application. SQLite

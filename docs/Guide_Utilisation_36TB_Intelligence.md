@@ -1,1255 +1,829 @@
-# 📖 Guide d'Utilisation Complet - 36TB Intelligence
+# 📖 Guide d'Utilisation — 36TB Intelligence
 
-**Version 1.0 - Septembre 2025**  
-*Système d'Exploitation de Connaissances Personnelles avec Témoins Visuels d'Activité*
+**Version 1.0.0-rc2 (MVP) — Novembre 2026**
+*Système personnel de connaissances : indexer, rechercher, comprendre et
+exploiter un disque local — sans envoyer vos documents sur Internet.*
 
----
-
-## Table des Matières
-
-1. [Vue d'ensemble](#vue-densemble)
-2. [Démarrage Rapide](#démarrage-rapide)
-3. [Interface Launcher Principal](#interface-launcher-principal)
-4. [Interface Classique](#interface-classique)
-5. [Interface Moderne](#interface-moderne)
-6. [Configuration et Paramètres](#configuration-et-paramètres)
-7. [Cas d'Usage Typiques](#cas-dusage-typiques)
-8. [Dépannage](#dépannage)
-9. [Fonctionnalités Avancées](#fonctionnalités-avancées)
-10. [Support et Communauté](#support-et-communauté)
+> Ce guide décrit **l'application canonique** : une seule UI Streamlit, une seule
+> CLI (`pis`), une seule base SQLite, un seul store vectoriel local.
+> Évidence réelle : [`REAL_CORPUS.md`](REAL_CORPUS.md) ·
+> Test d'installation neuve : [`ACCEPTANCE_NEW_USER.md`](ACCEPTANCE_NEW_USER.md) ·
+> Limites : [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 
 ---
 
-## 🎯 Vue d'ensemble
+## Table des matières
 
-**36TB Intelligence** est un système d'exploitation de connaissances personnelles révolutionnaire qui vous permet d'indexer, rechercher et analyser des téraoctets de données avec l'aide de l'intelligence artificielle.
-
-### Fonctionnalités Principales
-
-- **Indexation Ultra-Rapide** : Scan de millions de fichiers
-- **Recherche IA** : Compréhension sémantique du contenu
-- **Chat Intelligent** : Conversation avec vos documents
-- **Visualisations Avancées** : Graphiques interactifs
-- **Témoins Visuels** : Monitoring temps réel de toutes les activités
-- **Multi-Interface** : Classique et Moderne selon vos préférences
+1. [À qui s'adresse ce guide](#1-à-qui-sadresse-ce-guide)
+2. [Ce que fait l'application](#2-ce-que-fait-lapplication)
+3. [Prérequis](#3-prérequis)
+4. [Installation](#4-installation)
+5. [Premiers pas en 10 minutes](#5-premiers-pas-en-10-minutes)
+6. [Où sont vos données](#6-où-sont-vos-données)
+7. [Profils de lancement (LITE / SMART / FULL)](#7-profils-de-lancement)
+8. [L'interface graphique](#8-linterface-graphique)
+9. [La CLI `pis`](#9-la-cli-pis)
+10. [Le scan : politique et sécurité](#10-le-scan--politique-et-sécurité)
+11. [L'extraction de contenu](#11-lextraction-de-contenu)
+12. [La recherche](#12-la-recherche)
+13. [Couverture sémantique et embeddings de fond](#13-couverture-sémantique-et-embeddings-de-fond)
+14. [Doublons, versions et documents liés](#14-doublons-versions-et-documents-liés)
+15. [Intelligence, timeline, graphe et galaxie](#15-intelligence-timeline-graphe-et-galaxie)
+16. [Rapports et dossiers](#16-rapports-et-dossiers)
+17. [Sauvegarde et restauration](#17-sauvegarde-et-restauration)
+18. [API locale et MCP](#18-api-locale-et-mcp)
+19. [Confidentialité et sécurité](#19-confidentialité-et-sécurité)
+20. [Dépannage](#20-dépannage)
+21. [Limites connues](#21-limites-connues)
+22. [Mise à jour, migration, désinstallation](#22-mise-à-jour-migration-désinstallation)
+23. [Annexes](#23-annexes)
 
 ---
 
-## 🚀 Démarrage Rapide
+## 1. À qui s'adresse ce guide
 
-### Prérequis Système
+À toute personne qui possède un gros volume de fichiers personnels (documents,
+PDF, emails, archives, photos de documents) et veut :
 
-- **OS** : Windows 10/11, macOS, Linux
-- **Python** : 3.11 ou supérieur
-- **RAM** : 8GB minimum, 16GB recommandé
-- **Stockage** : 10GB libres pour l'application
-- **Ollama** : Pour les fonctionnalités IA (optionnel)
+- savoir **ce qu'elle possède** (inventaire, doublons, ancienneté) ;
+- **retrouver** un document par son nom, son contenu ou son sens ;
+- **comprendre** un corpus (langues, entités, catégories, PII) ;
+- **produire** un dossier ou un rapport reproductible.
 
-### 1. Lancement de l'Application
+L'application est **mono-utilisateur**, **locale** et **Linux-first**. Elle ne
+modifie jamais vos fichiers sources.
+
+---
+
+## 2. Ce que fait l'application
+
+| Domaine | Capacité |
+|---|---|
+| Inventaire | Scan rapide et incrémental, cycle de vie (actif/manquant), volumes |
+| Contenu | Extraction PDF, Office/ODF, texte, emails, EPUB, CHM, archives |
+| Recherche | Lexicale (FTS5), sémantique (embeddings locaux), rerank |
+| Compréhension | Langue, entités, catégories, PII (masquée), timeline |
+| Relations | Doublons exacts, quasi-doublons, versions, documents liés, graphe |
+| Exploration | Galaxie sémantique 2D, clusters, topics, contexte documentaire |
+| Décision | Dossiers, 8 types de rapports, export HTML/JSON/PDF avec citations |
+| Exploitation | CLI `pis`, API loopback, doctor, maintenance, sauvegarde/restauration |
+| Confidentialité | 100 % local par défaut, politique distante `never`, PII masquée |
+
+---
+
+## 3. Prérequis
+
+- **OS** : Linux (validé). macOS/Windows non validés pour ce MVP.
+- **Python** : 3.11 ou 3.12.
+- **RAM** : 4 Go minimum ; 16 Go recommandés pour de gros corpus.
+- **Disque** : ~1 Go pour l'application + l'espace de la base (≈ 1,4 Ko/fichier
+  indexé) et du store vectoriel.
+- **Optionnel** (détecté, jamais requis) :
+  `tesseract` (OCR), `libreoffice`/`soffice` (Office ancien, export PDF),
+  `7z` (CHM), `readpst` (PST/OST), `google-chrome`/`chromium` (PDF alternatif),
+  `ollama` (LLM local).
+
+---
+
+## 4. Installation
+
+### 4.1 Depuis les sources (recommandé pour ce dépôt)
 
 ```bash
-# Depuis le répertoire du projet
-.venv/Scripts/python.exe -m streamlit run launcher.py
+git clone <votre-dépôt> 36tb-intelligence
+cd 36tb-intelligence
+
+python -m venv .venv
+source .venv/bin/activate
+
+# Cœur de l'application, versions validées
+pip install -c constraints.txt -e .
+
+# Variantes :
+# pip install -c constraints.txt -e ".[dev]"        # tests + lint
+# pip install -c constraints.txt -e ".[ai,ocr]"     # embeddings locaux, OCR
+# pip install -r requirements.txt                   # cœur + extras recommandés
 ```
 
-### 2. Accès au Launcher
+### 4.2 Depuis un wheel
 
-- Ouvrez votre navigateur à l'adresse : **http://localhost:8504**
-- Le launcher s'affiche avec l'interface de sélection
-
----
-
-## 🖥️ Interface Launcher Principal
-
-### 🎨 Éléments Visuels
-
-L'interface principale présente un design futuriste avec fond dégradé animé.
-
-#### En-tête Animé
-- **Titre** : "🔍 36TB Intelligence" avec animation de dégradé
-- **Sous-titre** : "Choose Your Experience"
-
-#### Cartes d'Interface
-- **⚡ Classic Interface** : Interface familière et fonctionnelle
-- **🌟 Modern Interface** : UX révolutionnaire avec IA
-
-### 🔄 Témoins d'Activité (NOUVEAUTÉ)
-
-#### Indicateur Flottant
-- **Position** : Coin haut-droit de l'écran
-- **Apparence** : Badge animé avec dégradé bleu-violet
-- **Information** : Nombre de processus actifs en temps réel
-- **Animation** : Pulsation continue quand des tâches sont en cours
-
-#### Sidebar de Monitoring
-```
-🔄 Live Activity
-├── Status: ACTIVE (2 processus) / IDLE
-├── Recent: 3 dernières activités avec timestamps
-├── System: Métriques CPU et RAM en direct
-└── Auto-refresh: Mise à jour automatique
-```
-
-### 📊 Section System Status
-
-#### Indicateurs de Santé
-- **✅ Database Ready** : Base de données accessible
-- **✅ AI Ready** : Ollama et modèles IA disponibles  
-- **✅ Visualizations Ready** : Dépendances graphiques OK
-
-#### Quick Stats
-- **Data Files** : Nombre de fichiers indexés
-- **System Capacity** : Capacité de stockage disponible
-- **User Type** : Nouvel utilisateur ou récurrent
-- **Last Used** : Dernière interface utilisée
-
----
-
-## ⚡ Interface Classique
-
-### 🚀 Lancement
-
-- Cliquez sur "🚀 Launch Classic" dans le launcher
-- Ouverture automatique sur **http://localhost:8501**
-- Interface familière et performante
-
-### 📱 Navigation Principale
-
-#### Sidebar avec Monitoring
-La sidebar intègre désormais un système de monitoring complet :
-
-```
-🔄 Live Activity
-├── Status: ACTIVE (2 processus)
-├── 🔍 Search: "Recherche photos" (30s)
-├── 🗄️ Database: "Indexing files" (75%)
-├── Recent: Database init (14:32:15)
-├── System: CPU 15% | RAM 45%
-└── Auto-refresh activé
-```
-
-#### Pages Disponibles
-
-1. **🚀 Scanner** - Indexation de fichiers
-2. **🔍 Search** - Recherche simple et rapide
-3. **🎯 Advanced Search** - Filtres avancés
-4. **🧠 AI Search** - Recherche sémantique
-5. **💬 AI Chat** - Conversation avec vos documents
-6. **🏷️ Tags & Favorites** - Organisation personnalisée
-7. **📊 Dashboard** - Vue d'ensemble
-8. **📈 Statistics** - Analyses détaillées
-9. **🌌 Visualizations** - Graphiques interactifs
-10. **👁️ File Viewer** - Prévisualisation
-11. **🔄 Auto-Extract** - Extraction automatique
-12. **🤖 Advanced AI** - IA avancée
-13. **☁️ Cloud Sync** - Synchronisation cloud
-
-### 🔍 Page Scanner
-
-#### Sélection des Disques
-L'application détecte automatiquement tous les lecteurs disponibles :
-
-```
-📁 Drives Detection
-├── C:\ (System) - 500GB utilisés / 1TB total
-├── D:\ (Data) - 2.5TB utilisés / 4TB total
-└── E:\ (Backup) - 800GB utilisés / 2TB total
-```
-
-#### Options de Scan
-- **Profondeur maximale** : Limite de sous-dossiers (1-20)
-- **Types de fichiers** : Filtrage par extensions (.pdf, .docx, etc.)
-- **Taille maximale** : Exclusion des gros fichiers (MB/GB)
-- **Fichiers cachés** : Inclure/exclure les fichiers système
-- **Liens symboliques** : Suivre ou ignorer les raccourcis
-
-#### Démarrage du Scan
-1. Sélectionner les lecteurs à analyser
-2. Configurer les options selon vos besoins
-3. Cliquer "🚀 Start Scan"
-4. **Observer les témoins d'activité** :
-   - Indicateur flottant : "🔍 Scanning"
-   - Sidebar : Progress bar en temps réel
-   - Log détaillé : Fichiers traités par seconde
-
-### 🔍 Pages de Recherche
-
-#### Search Simple
-- **Barre de recherche** : Saisie de texte libre
-- **Filtres rapides** : Type de fichier, taille, date de modification
-- **Résultats instantanés** : Liste avec prévisualisation
-- **Actions disponibles** : Ouvrir, copier chemin, ajouter aux favoris
-
-#### Advanced Search
-- **Filtres multiples** : Combinaisons complexes (ET, OU, NON)
-- **Recherche par contenu** : Dans le texte des fichiers
-- **Expressions régulières** : Patterns avancés
-- **Métadonnées** : Propriétés EXIF, durée vidéo, auteur document
-
-#### AI Search (Sémantique)
-- **Recherche naturelle** : "Documents sur mes voyages en Asie"
-- **Compréhension contextuelle** : Synonymes, concepts connexes
-- **Similarité** : Documents thématiquement proches
-- **Scoring intelligent** : Pertinence calculée par IA
-
-### 💬 AI Chat
-
-#### Interface de Conversation
-```
-🤖 Assistant IA - Conversation en cours
-├── Vous: "Montre-moi tous mes PDF sur la comptabilité"
-├── Assistant: [🔄 Scanning documents...]
-├── Résultat: 15 documents trouvés
-├── Actions: Ouvrir fichier, Résumer contenu, Exporter liste
-└── Suivi: "Veux-tu que je résume le contenu ?"
-```
-
-#### Capacités de l'IA
-- **Compréhension** : Questions en langage naturel français
-- **Recherche contextualisée** : Dans tous vos fichiers indexés
-- **Résumé automatique** : Synthèse de documents longs
-- **Analyse thématique** : Tendances, patterns, insights
-- **Recommandations** : Suggestions de fichiers connexes
-
----
-
-## 🌟 Interface Moderne
-
-### 🚀 Lancement
-- Cliquez sur "✨ Launch Modern" dans le launcher
-- Ouverture automatique sur **http://localhost:8503**
-- Interface révolutionnaire avec UX avancée
-
-### 🎨 Design Moderne
-
-#### En-tête Intelligent
-- **Global Search Bar** : Recherche accessible depuis toute page
-- **Status Indicators** : État temps réel de tous les systèmes
-- **Theme Toggle** : Basculement mode sombre/clair
-- **Notifications Bell** : Alertes et messages système
-
-#### Sidebar Enrichie
-```
-🔄 Live Activity
-├── STATUS: ACTIVE (3 processus)
-├── 🔍 Global search: "photos vacances été"
-├── 🤖 AI Assistant: Processing semantic query
-├── 🗄️ Database: Indexing new files (75%)
-├── Recent: 5 dernières actions horodatées
-└── Quick Stats: Files, Storage, Searches
-```
-
-#### Navigation par Cards
-```
-🧭 Navigation Moderne
-├── 🚀 Scanner (Index new files)
-├── 🔍 Smart Search (AI-powered file search)
-├── 🎯 Advanced Search (Detailed filters) 
-├── 🤖 AI Assistant (Chat with documents)
-├── 🔄 Activity Dashboard (Real-time monitoring) ⭐ NOUVEAU
-├── 🏷️ Tags & Favorites (Organize files)
-├── 🏠 Dashboard (Overview & actions)
-├── 📊 Analytics (System insights)
-└── 🌌 Visualizations (Revolutionary data viz)
-```
-
-### 🔄 Activity Dashboard (NOUVEAUTÉ EXCLUSIVE)
-
-#### Accès à la Page
-- Navigation → "🔄 Activity Dashboard"
-- Vue temps réel complète de tous les processus système
-
-#### Métriques Globales en Temps Réel
-```
-📊 Statistiques d'Activité
-├── 🔄 Active: 3 processus en cours
-├── ✅ Completed: 147 tâches terminées
-├── ❌ Errors: 2 erreurs rencontrées
-└── 📊 Total: 152 activités depuis démarrage
-```
-
-#### Section Processus Actifs
-```
-🟡 Processus en Cours d'Exécution
-├── 🔍 Search: "Recherche sémantique photos" 
-│   └── ⏱️ Durée: 30 secondes
-├── 🗄️ Database: "Indexation nouveaux fichiers" 
-│   └── ██████████░░░░░░ 75% complété
-└── 🤖 AI Assistant: "Traitement résumé document"
-    └── ⏱️ Durée: 12 secondes
-```
-
-#### Log d'Activité Détaillé
-```
-📋 Journal d'Activité (Temps Réel)
-├── 🟢 14:32:45 [search] Recherche terminée (durée: 1.2s)
-├── 🔵 14:32:44 [ui] Ouverture page Search (durée: 0.1s)
-├── 🟢 14:32:43 [startup] Interface moderne prête (durée: 2.1s)
-├── 🟡 14:32:41 [system] CPU élevé détecté: 85.2%
-├── 🟢 14:32:40 [database] Initialisation DB (durée: 0.8s)
-└── 🔵 14:32:39 [ui] Clic bouton Modern Interface
-```
-
-#### Métriques Système Avancées
-```
-💻 Performances Système (Temps Réel)
-├── CPU Usage: ████████░░ 78% (8 cœurs)
-├── Memory Usage: ██████░░░░ 62% (8.2GB/16GB)
-├── Disk Usage: ███░░░░░░░ 34% (850GB/2TB)
-└── Network: ↑1.2GB ↓8.7GB
-
-🔧 Informations Système  
-├── Process Count: 247 processus actifs
-├── System Uptime: 5 jours 14 heures
-├── Temperature CPU: 65°C (Normal)
-└── GPU Usage: 12% (RTX 3090)
-```
-
-### 🔍 Smart Search Moderne
-
-#### Barre de Recherche Globale
-- **Disponibilité** : Accessible sur toutes les pages
-- **Auto-completion** : Suggestions intelligentes en temps réel
-- **Historique intégré** : Dernières recherches sauvegardées
-- **Tracking visuel** : Activité visible dans les témoins
-
-#### Résultats Enrichis
-- **Interface en cards** : Aperçus visuels avec miniatures
-- **Scoring IA** : Pourcentage de pertinence affiché
-- **Actions rapides** : Ouvrir, partager, taguer en un clic
-- **Recommandations** : "Fichiers similaires" suggérés
-
----
-
-## 🔧 Configuration et Paramètres
-
-### 📁 Structure des Données
-```
-36TB-Intelligence/
-├── data/
-│   ├── indexes/
-│   │   └── files.db (Base SQLite principale)
-│   ├── cache/
-│   │   ├── embeddings/ (Cache IA pour recherche sémantique)
-│   │   └── thumbnails/ (Miniatures des images)
-│   ├── reports/
-│   │   └── scan_reports/ (Rapports de scan détaillés)
-│   └── logs/
-│       ├── activity.log (Journal d'activité temps réel)
-│       └── errors.log (Journal des erreurs)
-├── .env (Configuration principale)
-└── requirements.txt (Dépendances Python)
-```
-
-### ⚙️ Fichier de Configuration (.env)
-```env
-# Configuration Base de Données
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=tb36_index
-POSTGRES_USER=tb36_user
-POSTGRES_PASSWORD=your_secure_password
-
-# Chemins de Scan
-SCAN_PATHS=C:\
-DATA_DIR=./data
-CACHE_DIR=./data/cache
-
-# Configuration IA (Ollama)
-OLLAMA_BASE_URL=http://localhost:11434
-EMBEDDING_MODEL=nomic-embed-text
-LLM_MODEL=llama3.2:latest
-VISION_MODEL=llava
-
-# Paramètres de Performance
-BATCH_SIZE=100
-MAX_WORKERS=8
-GPU_ENABLED=true
-MAX_FILE_SIZE_GB=1
-
-# Sécurité
-ENCRYPTION_KEY=generate_with_fernet
-JWT_SECRET=your_jwt_secret
-ALLOWED_HOSTS=localhost,127.0.0.1
-
-# Développement
-DEBUG=false
-LOG_LEVEL=INFO
-PROFILE_PERFORMANCE=false
-
-# Fonctionnalités
-ENABLE_OCR=true
-ENABLE_EMAIL_EXTRACTION=true
-ENABLE_VISUALIZATION=true
-ENABLE_AUTO_CLASSIFICATION=true
-```
-
-### 🤖 Configuration IA (Ollama)
-
-#### Modèles Requis
-1. **llama3.2:latest** - Modèle principal pour chat et compréhension
-2. **nomic-embed-text** - Génération d'embeddings pour recherche sémantique
-3. **llava** - Analyse d'images (optionnel)
-
-#### Installation Ollama
 ```bash
-# Installation sur Windows
-winget install Ollama.Ollama
-
-# Installation sur macOS
-brew install ollama
-
-# Installation sur Linux
-curl https://ollama.ai/install.sh | sh
-
-# Téléchargement des modèles
-ollama pull llama3.2:latest
-ollama pull nomic-embed-text
-ollama pull llava
-
-# Vérification installation
-ollama list
-ollama ps
+python -m venv .venv
+source .venv/bin/activate
+pip install 36tb_intelligence-1.0.0rc2-py3-none-any.whl
+pip check
 ```
 
-#### Test de Connectivité
+### 4.3 Vérifier l'installation
+
 ```bash
-# Test API Ollama
-curl http://localhost:11434/api/tags
-
-# Test modèle spécifique
-curl http://localhost:11434/api/generate -d '{
-  "model": "llama3.2:latest",
-  "prompt": "Hello, test message"
-}'
+pis --help
+pis doctor
 ```
 
----
+`pis doctor` affiche `OK`, `WARN`, `NOT_CONFIGURED` ou `ERROR` pour chaque
+dépendance et chemin. Un `WARN` n'empêche pas l'utilisation.
 
-## 🎯 Cas d'Usage Typiques
-
-### 📊 Scenario 1 : Premier Scan Complet
-
-#### Contexte
-Nouvel utilisateur souhaitant indexer complètement ses données personnelles sur 2 disques durs (1TB + 4TB).
-
-#### Étapes Détaillées
-1. **Lancement Application**
-   - Ouvrir http://localhost:8504
-   - Observer le launcher avec témoins d'activité
-   
-2. **Sélection Interface**
-   - Choisir "⚡ Classic Interface" pour stabilité
-   - Redirection automatique vers http://localhost:8501
-   
-3. **Configuration Scan**
-   - Naviguer vers page "🚀 Scanner"
-   - Sélectionner disques C:\ et D:\
-   - Paramètres recommandés :
-     - Max depth: 15 niveaux
-     - Include hidden: Non (performance)
-     - Max file size: 5GB (éviter vidéos énormes)
-     - Extensions: Toutes sauf .tmp, .log
-   
-4. **Lancement Scan**
-   - Cliquer "🚀 Start Advanced Scan"
-   - **Observer témoins d'activité** :
-     - Indicateur flottant : "🔍 Scanning (2 drives)"
-     - Sidebar : Progression temps réel
-     - Vitesse : ~1000-5000 fichiers/seconde
-     - ETA : Estimation temps restant
-
-5. **Monitoring Continu**
-   - Sidebar Activity Monitor :
-     ```
-     🔄 SCANNING (1 active)
-     ├── 🔍 Multi-drive scan: 45,678 files (12%)
-     ├── Speed: 2,340 files/sec
-     ├── ETA: 2h 15min remaining
-     └── Current: D:\Photos\Vacances\...
-     ```
-
-#### Résultat Attendu
-- **500,000+** fichiers indexés
-- **Base de données** complètement peuplée
-- **Embeddings IA** générés pour recherche sémantique
-- **Temps total** : 2-4 heures selon matériel
-- **Prêt pour** : Recherches intelligentes, chat IA
-
-### 🔍 Scenario 2 : Recherche Intelligente Multi-Critères
-
-#### Contexte
-Utilisateur recherchant des documents professionnels spécifiques parmi 100,000+ fichiers indexés.
-
-#### Étapes avec Monitoring
-1. **Interface Moderne**
-   - Accéder http://localhost:8503
-   - Observer interface avec témoins visuels
-
-2. **Recherche Globale**
-   - Barre de recherche : "contrats travail 2023 CDD"
-   - **Témoins d'activité immédiatement visibles** :
-     - Indicateur flottant : "🤖 AI Search"
-     - Sidebar : "🔍 Processing semantic search..."
-
-3. **Traitement IA**
-   - L'IA analyse la requête
-   - Recherche dans les embeddings
-   - Activity Monitor montre :
-     ```
-     🟡 Active Processes
-     ├── 🤖 AI Search: "contrats travail 2023 CDD"
-     │   ├── Progress: ████████░░ 80%
-     │   ├── Stage: "Semantic analysis complete"
-     │   └── Found: 23 potential matches
-     └── 🔍 Content analysis: Reading PDF content
-         └── Progress: ██████░░░░ 60%
-     ```
-
-4. **Résultats Enrichis**
-   - 15 documents trouvés avec scores de pertinence
-   - Prévisualisation automatique
-   - Actions : Ouvrir, résumer, exporter
-
-#### Temps de Réponse
-- **Recherche simple** : 0.5-2 secondes
-- **Recherche sémantique** : 2-8 secondes
-- **Analyse contenu** : 5-15 secondes selon taille
-
-### 💬 Scenario 3 : Chat Intelligent avec Documents
-
-#### Contexte
-Utilisateur souhaitant obtenir un résumé intelligent de tous ses relevés bancaires 2023.
-
-#### Conversation Complète
-1. **Accès AI Assistant**
-   - Page "🤖 AI Assistant" 
-   - Interface chat moderne
-
-2. **Question Initiale**
-   - **Utilisateur** : "Résume-moi tous mes relevés bancaires de 2023"
-   - **Témoins immédiatement actifs** :
-     ```
-     🔄 Live Activity - ACTIVE (2)
-     ├── 🤖 AI Chat: "Document analysis in progress"
-     └── 🗄️ Database: "Searching banking documents"
-     ```
-
-3. **Traitement Multi-Étapes**
-   ```
-   Activity Dashboard - Processus Détaillés
-   ├── 🔍 Phase 1: Document Discovery
-   │   ├── Query: "relevés bancaires 2023"
-   │   ├── Found: 36 PDF files
-   │   └── Duration: 1.2s
-   ├── 📄 Phase 2: Content Extraction  
-   │   ├── Processing: PDF text extraction
-   │   ├── Progress: ████████████ 100%
-   │   └── Duration: 8.7s
-   └── 🤖 Phase 3: AI Analysis
-       ├── Model: llama3.2:latest
-       ├── Task: Financial summary generation
-       ├── Progress: ██████░░░░░░ 50%
-       └── ETA: 15s remaining
-   ```
-
-4. **Réponse IA Contextuelle**
-   - **Assistant** : "J'ai analysé 36 relevés bancaires de 2023. Voici le résumé :"
-   - Synthèse détaillée avec graphiques
-   - Actions proposées : Export Excel, alertes, trends
-
-5. **Questions de Suivi**
-   - **Utilisateur** : "Quels sont mes plus gros frais récurrents ?"
-   - **IA** : Analyse approfondie avec catégorisation automatique
-
-### 📈 Scenario 4 : Monitoring Système et Optimisation
-
-#### Usage Quotidien du Monitoring
-1. **Accès Activity Dashboard**
-   - Interface Moderne → "🔄 Activity Dashboard"
-   - Vue globale temps réel
-
-2. **Détection d'Anomalie**
-   ```
-   🔴 System Alert - 14:45:23
-   ├── ⚠️ High CPU Usage: 94% sustained
-   ├── 🔥 Temperature: CPU 85°C (Warning)
-   ├── 💾 Memory: 15.2GB/16GB (95% usage)
-   └── 📊 Active Tasks: 
-       ├── 🔍 Large scan operation (2.5M files)
-       ├── 🤖 AI model: Heavy processing
-       └── 🗄️ Database: Index rebuilding
-   ```
-
-3. **Actions Correctives**
-   - Pause du scan lourd
-   - Réduction workers simultanés
-   - Vidange cache temporaire
-   - Monitoring continu des métriques
-
-4. **Optimisation Proactive**
-   - Planification scans hors heures creuses
-   - Limitation ressources par tâche
-   - Alertes préventives configurées
+> **Important** : le cœur installé sans l'extra `ai` ne contient pas
+> `torch`/`sentence-transformers`. La recherche lexicale fonctionne ; la
+> recherche sémantique et les clusters affichent `NOT_CONFIGURED` avec la
+> commande d'installation à exécuter.
 
 ---
 
-## ❗ Dépannage
+## 5. Premiers pas en 10 minutes
 
-### 🔴 Problèmes Courants et Solutions
-
-#### Port Déjà Utilisé
 ```bash
-# Symptôme
-Error: Port 8504 is already in use
+# 1. État de départ + base résolue (affichée par toutes les commandes)
+pis status
 
-# Diagnostic
-netstat -tulpn | grep :8504
-lsof -i :8504  # macOS/Linux
-netstat -ano | findstr :8504  # Windows
+# 2. Scanner un dossier réel (scan partiel sûr par défaut)
+pis scan ~/Documents
 
-# Solution 1: Tuer le processus
-taskkill /F /PID <PID>  # Windows
-kill -9 <PID>  # macOS/Linux
+# 3. Extraire le contenu (par lots bornés)
+pis extract --limit 500
 
-# Solution 2: Port alternatif
-streamlit run launcher.py --server.port=8505
+# 4. Chercher
+pis search facture
+pis search "facture impayée client" --mode semantic --limit 10
+
+# 5. Lancer l'interface
+scripts/run_full.sh          # ou : pis ui full
+# → http://127.0.0.1:8501
 ```
 
-#### Intelligence Artificielle Indisponible
+Parcours conseillé ensuite :
+
 ```bash
-# Symptôme dans Activity Monitor
-🔴 AI Status: ERROR - Connection refused
-
-# Diagnostic
-curl http://localhost:11434/api/tags
-# Ou via navigateur: http://localhost:11434
-
-# Solutions
-# 1. Vérifier service Ollama
-systemctl status ollama  # Linux
-brew services list | grep ollama  # macOS
-Get-Service -Name "Ollama*"  # Windows
-
-# 2. Redémarrer Ollama
-ollama serve
-# Ou redémarrage service système
-
-# 3. Réinstaller modèles
-ollama pull llama3.2:latest
-ollama pull nomic-embed-text
-
-# 4. Test fonctionnel
-ollama run llama3.2:latest "Hello test"
+pis intel --limit 500          # langues, entités, catégories, PII
+pis hashes                     # doublons exacts
+pis embed                      # embeddings locaux (couverture sémantique)
+pis hashes --near              # quasi-doublons (utilise les vecteurs)
+pis clusters --build           # clusters + topics
+pis galaxy --limit 1000        # carte sémantique
+pis report build --kind SEARCH --query '{"query":"facture"}' --formats HTML,JSON
 ```
 
-#### Base de Données Corrompue
+---
+
+## 6. Où sont vos données
+
+Tous les chemins sont **absolus et indépendants du répertoire courant**.
+
+| Donnée | Chemin par défaut | Variable |
+|---|---|---|
+| Base SQLite | `~/.local/share/pis/indexes/files.db` | `PIS_DB_PATH` / `PIS_DATA_DIR` |
+| Store vectoriel + cache modèles | `~/.local/share/pis/cache/embeddings` | `PIS_EMBEDDING_STORE_DIR` |
+| Rapports exportés | `~/.pis-exports` | `PIS_EXPORT_DIR` |
+| Sauvegardes | `~/.pis-backups` | `PIS_BACKUP_DIR` |
+| État des jobs (embedding) | `~/.local/state/pis` | `PIS_STATE_DIR` |
+| Cache général | `~/.cache/pis` | `PIS_CACHE_DIR` |
+| Logs | `~/.local/share/pis/logs` | — |
+
+Chaque commande affiche la base utilisée sur `stderr` (et dans `_meta` avec
+`--json`). Un `--db /chemin/essai.db` permet de travailler sur une base de test
+sans toucher à la base principale.
+
+### Migration d'une ancienne installation
+
+Si vous aviez un dossier `./data` (versions antérieures) :
+
 ```bash
-# Symptômes dans Activity Monitor
-🔴 Database Status: ERROR - Database locked
-🔴 Recent Activity: Multiple DB errors
-
-# Diagnostic
-sqlite3 data/indexes/files.db ".schema"
-sqlite3 data/indexes/files.db "PRAGMA integrity_check;"
-
-# Solutions
-# 1. Sauvegarde préventive
-cp data/indexes/files.db data/indexes/files.db.backup
-
-# 2. Réparation automatique
-sqlite3 data/indexes/files.db "VACUUM;"
-sqlite3 data/indexes/files.db "REINDEX;"
-
-# 3. Recréation complète (dernier recours)
-rm data/indexes/files.db
-# Relancer l'application - DB recréée automatiquement
+pis migrate-data --dry-run     # plan, sans rien modifier
+pis migrate-data              # copie cohérente puis déplacement
 ```
 
-#### Performances Dégradées
+La migration déplace la base, les rapports et le store vectoriel, et lie la base
+au store migré. Pour la désactiver : `PIS_NO_AUTO_MIGRATE=1`.
+
+---
+
+## 7. Profils de lancement
+
+Une seule application, trois profils (mêmes pages cœur, capabilities avancées
+exposées différemment) :
+
+| Profil | Usage | Port par défaut |
+|---|---|---|
+| **LITE** ⚡ | Démarrage minimal, ressources réduites, IA locale | 8510 |
+| **SMART** 🎯 | Profil adapté au matériel, capacités à la demande | 8504 |
+| **FULL** 💪 | Toutes les capacités, chargement paresseux | 8501 |
+
 ```bash
-# Symptômes dans Activity Dashboard
-🟡 System Performance:
-├── CPU Usage: ████████████ 100% sustained
-├── Memory Usage: ███████████░ 92%
-├── Disk I/O: Very high latency
-└── Active Tasks: 15+ concurrent operations
+scripts/run_lite.sh
+scripts/run_smart.sh
+scripts/run_full.sh
 
-# Solutions
-# 1. Réduction charge système
-- Diminuer MAX_WORKERS (8 → 4)
-- Réduire BATCH_SIZE (1000 → 500)
-- Pausere scans non-critiques
-
-# 2. Optimisation cache
-rm -rf data/cache/embeddings/*  # Vider cache IA
-rm -rf data/cache/thumbnails/*  # Vider miniatures
-
-# 3. Monitoring ressources
-- Activity Dashboard → System Performance
-- Identifier processus les plus consommateurs
-- Optimiser planning des tâches lourdes
+# équivalent
+python -m src.launcher --profile lite
+pis ui full --port 8600
 ```
 
-### 🟡 Optimisations de Performance
-
-#### Paramètres Scan Optimaux
-```env
-# Pour SSD rapides
-MAX_WORKERS=8
-BATCH_SIZE=2000
-MAX_FILE_SIZE_GB=10
-
-# Pour HDD traditionnels
-MAX_WORKERS=4
-BATCH_SIZE=1000
-MAX_FILE_SIZE_GB=5
-
-# Pour systèmes limitées (8GB RAM)
-MAX_WORKERS=2
-BATCH_SIZE=500
-MAX_FILE_SIZE_GB=2
-```
-
-#### Exclusions Recommandées
-```
-# Dossiers à exclure pour performance
-├── Windows/System32/
-├── AppData/Local/Temp/
-├── $Recycle.Bin/
-├── node_modules/
-├── .git/
-├── __pycache__/
-└── *.tmp, *.log, *.cache
-```
-
-#### Gestion Mémoire
-```python
-# Configuration automatique selon RAM disponible
-RAM_GB = psutil.virtual_memory().total / (1024**3)
-
-if RAM_GB < 8:
-    MAX_WORKERS = 2
-    BATCH_SIZE = 500
-elif RAM_GB < 16:
-    MAX_WORKERS = 4  
-    BATCH_SIZE = 1000
-else:
-    MAX_WORKERS = 8
-    BATCH_SIZE = 2000
-```
+Le port demandé échoue proprement s'il est occupé ; sinon un port libre proche
+est choisi. Le launcher affiche le profil, l'URL, la politique distante et la
+base résolue.
 
 ---
 
-## 🏆 Fonctionnalités Avancées
+## 8. L'interface graphique
 
-### 🎨 Système de Témoins Visuels Complet
+L'interface canonique (`src/ui/app.py`) expose jusqu'à 20 pages selon le profil :
 
-#### Types d'Indicateurs d'Activité
-- **🔵 Working** : Tâche en cours d'exécution
-- **🟢 Success** : Terminé avec succès  
-- **🔴 Error** : Erreur rencontrée
-- **🟡 Warning** : Avertissement système
-- **⚪ Idle** : Système inactif
+| Page | Rôle |
+|---|---|
+| 🚀 **Scanner** | Lancer un scan, suivre la progression, choisir les exclusions |
+| 🔍 **Search** | Recherche lexicale, filtres, ouverture de fichiers |
+| 🎯 **Advanced Search** | Filtres avancés, tri, suggestions |
+| 🧬 **Duplicates & Versions** | Hachage, doublons exacts/quasi, versions, liés, rerank |
+| 🧠 **Document Intelligence** | Langue, entités, catégories, PII (masquée) |
+| 🧭 **Timeline & Graph** | Chronologie, voisinage, priorité |
+| 🌌 **Galaxy & Topics** | Carte sémantique, clusters, topics, contexte |
+| 🛠️ **Ingestion & Coverage** | File d'extraction, échecs, couverture |
+| 📁 **Dossiers & Reports** | Créer, prévisualiser, exporter, historique |
+| 🧰 **Operations & System** | Doctor, maintenance, sauvegarde/restauration |
+| 🧠 **AI Search** / 💬 **AI Chat** | Recherche et conversation locales (SMART/FULL) |
+| 🏷️ **Tags & Favorites** | Organisation manuelle |
+| 📊 **Dashboard** / 📈 **Statistics** | Vue d'ensemble et métriques |
+| 🌌 **Visualizations** | Graphiques Plotly/NetworkX (SMART/FULL) |
+| 👁️ **File Viewer** | Aperçu, archives, actions |
+| 🔄 **Auto-Extract** | Extraction automatique bornée (SMART/FULL) |
+| 🤖 **Advanced AI** | Résumés, Q&A, recommandations (SMART/FULL) |
+| ☁️ **Cloud Sync** | Synchronisation manuelle (SMART/FULL) |
 
-#### Emplacements des Témoins
-1. **Indicateur Flottant** 
-   - Position : Coin haut-droit (always visible)
-   - Contenu : Résumé activité principale
-   - Animation : Pulsation si actif
+La barre latérale affiche aussi :
 
-2. **Sidebar Compact** 
-   - Intégration : Dans toutes les interfaces
-   - Contenu : Top 3 activités + métriques système
-   - Rafraîchissement : Temps réel
+- **Couverture sémantique X %** (`embedded / eligible`) et la couverture
+  d'extraction ;
+- l'état du job d'embedding avec **▶️ Embeddings** et **⏹️ Stop** ;
+- le statut du backend IA, le profil actif et la politique distante.
 
-3. **Activity Dashboard** 
-   - Accès : Interface Moderne uniquement
-   - Contenu : Vue complète avec graphiques
-   - Historique : 100 dernières activités
+### Scanner depuis l'interface
 
-4. **Status Bar** 
-   - Position : Bas des pages (selon contexte)
-   - Contenu : Statut action en cours
-   - Temporaire : Disparaît après completion
-
-#### API de Tracking pour Développeurs
-```python
-# Import du système de monitoring
-from src.ui.real_time_monitor import (
-    start_activity, finish_activity, 
-    ActivityType, ActivityTracker
-)
-
-# Utilisation manuelle
-activity_id = start_activity(
-    ActivityType.FILE_PROCESSING, 
-    "Converting 1000 images to thumbnails"
-)
-# ... traitement ...
-finish_activity(activity_id, success=True)
-
-# Context Manager (recommandé)
-with ActivityTracker(ActivityType.SCAN, "Scanning Documents folder"):
-    scan_documents_folder()
-    # Tracking automatique des succès/échecs
-
-# Décorateur pour fonctions
-@track_activity(ActivityType.DATABASE, "Updating search index")
-def rebuild_search_index():
-    pass  # Fonction trackée automatiquement
-```
-
-### 📊 Analytics et Métriques Avancées
-
-#### Métriques Système en Temps Réel
-```
-💻 System Performance Dashboard
-├── CPU Usage: Par cœur + moyenne
-├── Memory: RAM + SWAP + Cache
-├── Disk I/O: Read/Write speeds + latency
-├── Network: Upload/Download + connections
-├── GPU: Usage + memory (si disponible)
-└── Temperature: CPU/GPU/SSD sensors
-```
-
-#### Métriques Application
-```
-📊 Application Analytics
-├── Performance:
-│   ├── Scan Speed: Files/second moyenne
-│   ├── Search Latency: Response time by type
-│   ├── AI Processing: Tokens/second
-│   └── Database Ops: Queries/second
-├── Usage Patterns:
-│   ├── Pages Most Visited: Heatmap temps
-│   ├── Search Queries: Top keywords/phrases
-│   ├── File Types: Most accessed extensions
-│   └── User Behavior: Navigation patterns
-├── Errors & Reliability:
-│   ├── Error Rate: Par fonctionnalité
-│   ├── Crash Reports: Automatic collection
-│   ├── Recovery Time: After failures
-│   └── Uptime Stats: Availability tracking
-└── Resource Usage:
-    ├── Storage: DB size growth over time
-    ├── Cache: Hit rates + eviction stats
-    ├── Memory: Peak usage per operation
-    └── Bandwidth: API calls + data transfer
-```
-
-#### Visualisations Interactives
-```
-🌌 Advanced Visualizations
-├── Time Series Charts:
-│   ├── System metrics over time
-│   ├── Usage patterns by hour/day
-│   └── Performance trends
-├── Network Graphs:
-│   ├── File relationships
-│   ├── Folder hierarchies
-│   └── Document similarity clusters
-├── Heat Maps:
-│   ├── Disk usage by folder
-│   ├── Activity by time of day
-│   └── Error frequency by component
-├── Interactive Dashboards:
-│   ├── Real-time monitoring
-│   ├── Drill-down capabilities
-│   └── Custom filtering/grouping
-└── Export Options:
-    ├── PNG/SVG for reports
-    ├── PDF comprehensive reports
-    └── CSV raw data export
-```
-
-### 🚀 Automatisations Intelligentes
-
-#### Scans Programmés
-```python
-# Configuration via interface ou .env
-SCHEDULED_SCANS = {
-    "daily_incremental": {
-        "cron": "0 2 * * *",  # 2h du matin
-        "paths": ["C:/Users/Documents", "D:/Projects"],
-        "mode": "incremental",  # Seulement nouveaux fichiers
-        "max_duration": "2h"
-    },
-    "weekly_full": {
-        "cron": "0 1 * * 0",  # Dimanche 1h
-        "paths": ["C:/", "D:/"],
-        "mode": "full",
-        "notifications": True
-    }
-}
-```
-
-#### IA Proactive et Suggestions
-```
-🤖 AI Proactive Features
-├── Smart Organization:
-│   ├── "67 photos sans nom détectées"
-│   ├── "Suggestion: Renommer par date/lieu"
-│   └── "Action: Auto-organize photos by year?"
-├── Cleanup Suggestions:
-│   ├── "2.3GB de fichiers temporaires trouvés"
-│   ├── "156 doublons exacts détectés"
-│   └── "Action: Suppression sécurisée?"
-├── Usage Optimization:
-│   ├── "Page 'Analytics' jamais visitée"
-│   ├── "Suggestion: Tutorial visualizations"
-│   └── "Fonctionnalités sous-utilisées"
-└── Maintenance Alerts:
-    ├── "Database fragmentation: 23%"
-    ├── "Suggestion: VACUUM recommandé"
-    └── "Cache size: 1.2GB - Purge advised"
-```
-
-#### Learning et Adaptation
-```python
-# Système d'apprentissage des habitudes
-USER_PATTERNS = {
-    "search_preferences": {
-        "favorite_file_types": [".pdf", ".docx", ".jpg"],
-        "common_keywords": ["work", "project", "photos"],
-        "search_times": "peak_hours_9-11_14-16"
-    },
-    "navigation_patterns": {
-        "most_used_pages": ["Search", "AI Chat", "Scanner"],
-        "workflow_sequences": ["Scan → Search → AI Chat"],
-        "session_duration": "avg_45min"
-    },
-    "performance_profile": {
-        "optimal_scan_workers": 6,
-        "preferred_batch_size": 1500,
-        "system_resource_comfort": "75%_cpu_max"
-    }
-}
-
-# Adaptations automatiques basées sur l'usage
-def adapt_to_user_behavior():
-    """Ajuste les paramètres selon les habitudes utilisateur."""
-    # Optimise automatiquement les performances
-    # Suggère des workflows plus efficaces  
-    # Personnalise l'interface selon usage
-```
+1. Sélectionnez un ou plusieurs chemins.
+2. Laissez cochée **« Continuer malgré les dossiers illisibles »** (mode sûr).
+3. Ajoutez éventuellement des exclusions (`node_modules`, `*.tmp`, `/mnt/backup`).
+4. Lancez. Un scan partiel se termine en **COMPLETED_WITH_WARNINGS** et affiche
+   les périmètres non parcourus ; la réconciliation n'y touche pas.
 
 ---
 
-## 📞 Support et Communauté
+## 9. La CLI `pis`
 
-### 🆘 Aide Immédiate
+### 9.1 Options globales
 
-#### Help Menu Intégré
-- **Accès** : Bouton "?" dans chaque interface
-- **Contenu** : Tooltips contextuels, guides pas-à-pas
-- **Recherche** : FAQ intégrée avec moteur de recherche
-
-#### Diagnostic Automatique
-```
-🔧 System Health Check - Auto-diagnostic
-├── ✅ Database: Connection OK, 125ms latency
-├── ✅ AI Services: Ollama responsive, 3 models loaded
-├── ⚠️ Storage: 87% full - Cleanup recommended
-├── ✅ Network: Internet connectivity OK
-├── ⚠️ Performance: CPU temp 78°C - Monitor advised
-└── ✅ Dependencies: All packages up to date
-
-📋 Recommendations:
-├── Run disk cleanup (estimated 2.1GB recoverable)
-├── Schedule CPU-intensive tasks for off-hours
-└── Update 2 optional dependencies available
-```
-
-#### Activity Logs pour Debug
-```
-📜 Debug Information Export
-├── activity.log (Real-time operations)
-├── error.log (Errors with stack traces)
-├── performance.log (System metrics)
-├── search.log (Query performance)
-└── user.log (Interaction patterns)
-
-🚀 Quick Actions:
-├── Export logs → ZIP file for support
-├── Clear logs → Free space (with backup)
-└── Email logs → Direct support submission
-```
-
-### 🌐 Resources et Documentation
-
-#### Documentation Complète
-```
-📚 Documentation Structure
-├── README.md (Quick start guide)
-├── INSTALL.md (Installation détaillée)
-├── API.md (Developer reference)
-├── TROUBLESHOOTING.md (Common issues)
-├── PERFORMANCE.md (Optimization guide)
-├── CHANGELOG.md (Version history)
-└── FAQ.md (Frequently asked questions)
-```
-
-#### Community Support
-- **GitHub Repository** : Issues, feature requests, discussions
-- **Discord Server** : Real-time chat, community help
-- **Wiki** : User-contributed guides and tips
-- **YouTube Channel** : Video tutorials and demos
-
-### 🔄 Mises à Jour et Évolution
-
-#### Système de Mise à Jour
-```
-🔄 Update System
-├── Auto-check: Weekly update verification
-├── Notification: In-app update alerts
-├── Changelog: Detailed release notes
-├── Backup: Automatic backup before update
-├── Rollback: Easy revert to previous version
-└── Beta Channel: Optional preview features
-```
-
-#### Roadmap Feedback
-- **Feature Voting** : Community-driven prioritization
-- **Beta Testing** : Early access program
-- **User Interviews** : Direct feedback sessions
-- **Analytics** : Anonymous usage patterns for UX improvements
-
----
-
-## 🔮 Roadmap et Vision Future
-
-### 🎯 Version 2.0 - Q1 2026
-
-#### Cloud Integration Complète
-```
-☁️ Multi-Cloud Support
-├── Google Drive: Bi-directional sync
-├── OneDrive: Business + Personal accounts
-├── Dropbox: Advanced + Business plans  
-├── iCloud: macOS integration
-├── AWS S3: Enterprise backup
-└── Custom S3: Private cloud support
-
-🔄 Hybrid Operations:
-├── Local + Cloud unified search
-├── Smart caching strategies
-├── Offline-first with sync
-└── Conflict resolution AI
-```
-
-#### Mobile Applications
-```
-📱 Mobile Apps (iOS + Android)
-├── Core Features:
-│   ├── Remote search your indexed files
-│   ├── AI chat with your documents
-│   ├── Camera → instant OCR → index
-│   └── Voice search with speech-to-text
-├── Sync Features:
-│   ├── Real-time activity monitoring
-│   ├── Remote scan triggering
-│   ├── Push notifications for jobs
-│   └── Mobile-optimized results view
-└── Security:
-    ├── Biometric authentication
-    ├── End-to-end encryption
-    └── VPN/tunnel support
-```
-
-#### Enterprise Features
-```
-🏢 Enterprise Edition
-├── Multi-User Support:
-│   ├── User authentication & authorization
-│   ├── Role-based access control (RBAC)
-│   ├── Team workspaces & sharing
-│   └── Activity auditing & compliance
-├── Scalability:
-│   ├── Distributed scanning across nodes
-│   ├── Kubernetes deployment support
-│   ├── Load balancing & high availability
-│   └── PostgreSQL cluster support
-├── Integration:
-│   ├── Active Directory / LDAP
-│   ├── SAML SSO providers
-│   ├── REST API for third-party integration
-│   └── Webhook system for automation
-└── Management:
-    ├── Central administration console
-    ├── Policy management & enforcement
-    ├── Resource quotas & monitoring
-    └── Backup & disaster recovery
-```
-
-### 🚀 Version 3.0 - Q4 2026
-
-#### Advanced AI Capabilities
-```
-🤖 Next-Generation AI
-├── Multi-Modal Understanding:
-│   ├── Image content analysis
-│   ├── Video scene recognition
-│   ├── Audio transcription & analysis
-│   └── Document layout understanding
-├── Advanced Reasoning:
-│   ├── Cross-document correlations
-│   ├── Timeline reconstruction
-│   ├── Trend analysis & predictions
-│   └── Automated report generation
-├── Personalization:
-│   ├── Individual AI assistants
-│   ├── Learning user preferences
-│   ├── Contextual suggestions
-│   └── Workflow automation
-└── Privacy-First AI:
-    ├── On-device model training
-    ├── Federated learning support
-    ├── Zero-knowledge architectures
-    └── Encrypted AI processing
-```
-
-#### Revolutionary Features
-```
-🌟 Breakthrough Capabilities
-├── Virtual Reality Interface:
-│   ├── 3D file system visualization
-│   ├── Immersive data exploration
-│   ├── Spatial search metaphors
-│   └── Collaborative VR workspaces
-├── Predictive Intelligence:
-│   ├── Predict file usage patterns
-│   ├── Preemptive content preparation
-│   ├── Anomaly detection & alerts
-│   └── Automated organization suggestions
-├── Quantum-Ready Security:
-│   ├── Post-quantum cryptography
-│   ├── Zero-trust architecture
-│   ├── Homomorphic encryption
-│   └── Blockchain-based audit trails
-└── Universal Compatibility:
-    ├── Any file format support
-    ├── Real-time format conversion
-    ├── Legacy system integration
-    └── Future-proof architecture
-```
-
-### 🌍 Vision Long-Terme
-
-**36TB Intelligence** ambitionne de devenir le **système d'exploitation de connaissances universelles**, capable de :
-
-1. **Comprendre et organiser** toute forme d'information numérique
-2. **Apprendre en continu** des habitudes et besoins utilisateurs
-3. **Anticiper les besoins** avant même qu'ils soient exprimés
-4. **Protéger absolument** la vie privée et sécurité des données
-5. **S'adapter à tout contexte** : personnel, professionnel, éducatif, recherche
-
-#### Impact Sociétal Visé
-- **Démocratisation** de l'intelligence artificielle personnelle
-- **Réduction de la surcharge informationnelle** moderne
-- **Augmentation** des capacités cognitives humaines
-- **Préservation** de la mémoire numérique personnelle et collective
-
----
-
-## 📋 Annexes
-
-### 🔑 Raccourcis Clavier
-```
-Navigation Globale:
-├── Ctrl+K : Recherche globale (toutes interfaces)
-├── Ctrl+/ : Aide contextuelle
-├── Ctrl+, : Paramètres
-├── F5 : Actualiser les données
-└── Esc : Retour/Annuler action
-
-Interface Launcher:
-├── 1 : Lancer Interface Classique
-├── 2 : Lancer Interface Moderne
-├── A : Ouvrir Activity Monitor
-└── S : System Status
-
-Interface de Recherche:
-├── Ctrl+F : Focus barre de recherche
-├── Enter : Lancer recherche
-├── Tab : Navigation résultats
-├── Ctrl+O : Ouvrir fichier sélectionné
-└── Ctrl+C : Copier chemin fichier
-
-AI Chat:
-├── Ctrl+Enter : Envoyer message
-├── ↑/↓ : Historique messages
-├── Ctrl+R : Nouvelle conversation
-└── Ctrl+S : Sauvegarder conversation
-```
-
-### 📊 Spécifications Techniques
-
-#### Configuration Minimale
-- **OS** : Windows 10 (1909+), macOS 11+, Ubuntu 20.04+
-- **CPU** : Intel i5 4th gen / AMD Ryzen 5 2600 / Apple M1
-- **RAM** : 8GB (16GB recommandé pour gros volumes)
-- **Stockage** : 10GB libres + espace pour index (1% du volume scanné)
-- **Python** : 3.11+ avec pip
-- **Réseau** : Connexion Internet pour IA (optionnel)
-
-#### Configuration Optimale
-- **OS** : Windows 11, macOS 13+, Ubuntu 22.04+
-- **CPU** : Intel i7 8th gen+ / AMD Ryzen 7 3700X+ / Apple M2+
-- **RAM** : 32GB pour traitement simultané de gros fichiers
-- **Stockage** : NVMe SSD pour performance maximale
-- **GPU** : RTX 3070+ / RX 6700 XT+ pour accélération IA
-- **Réseau** : Gigabit pour cloud sync rapide
-
-#### Limites Système Testées
-```
-📏 Limits & Benchmarks
-├── Files Indexed: 50M+ files successfully tested
-├── Total Storage: 100TB+ across multiple drives
-├── Concurrent Users: 100+ (Enterprise mode)
-├── Search Response: <100ms for 10M+ files
-├── AI Processing: 1000+ documents/minute
-├── Memory Usage: <2GB baseline, +1GB per 1M files
-└── Database Size: ~1% of indexed content size
-```
-
-### 🎯 Comparaison avec Alternatives
-
-| Fonctionnalité | 36TB Intelligence | Everything | Archivarius | dtSearch | Elasticsearch |
-|---|---|---|---|---|---|
-| **Vitesse indexation** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
-| **Recherche sémantique** | ⭐⭐⭐⭐⭐ | ❌ | ❌ | ⭐ | ⭐⭐ |
-| **Interface utilisateur** | ⭐⭐⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐ |
-| **IA intégrée** | ⭐⭐⭐⭐⭐ | ❌ | ❌ | ❌ | ⭐ |
-| **Monitoring temps réel** | ⭐⭐⭐⭐⭐ | ❌ | ❌ | ❌ | ⭐⭐⭐ |
-| **Multi-plateforme** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐⭐⭐ |
-| **Open Source** | ⭐⭐⭐⭐⭐ | ❌ | ❌ | ❌ | ⭐⭐⭐⭐⭐ |
-| **Simplicité setup** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐ | ⭐ |
-
----
-
-*Guide d'Utilisation Complet - 36TB Intelligence*  
-*Version 1.0 - Septembre 2025*  
-*Avec Système de Témoins Visuels d'Activité Temps Réel*
-
-**© 2025 - 36TB Intelligence Project**  
-*Développé avec ❤️ pour démocratiser l'accès à l'intelligence artificielle personnelle*
-
----
-
-**URLs de Lancement :**
-- **Launcher Principal** : http://localhost:8504
-- **Interface Classique** : http://localhost:8501  
-- **Interface Moderne** : http://localhost:8503
-
-**Support :**
-- **GitHub** : https://github.com/36tb-intelligence/issues
-- **Documentation** : https://docs.36tb-intelligence.org
-- **Community** : https://discord.gg/36tb-intelligence
-
-**Commande de Lancement :**
 ```bash
-.venv/Scripts/python.exe -m streamlit run launcher.py
+pis [--db CHEMIN] [--json] [-v|--verbose] [-q|--quiet] <commande> [options]
 ```
 
-*Bon usage de votre nouveau système d'intelligence personnelle ! 🚀*
+Ces options sont aussi acceptées **après** la sous-commande
+(`pis scan ~/Documents --json`).
+
+| Option | Effet |
+|---|---|
+| `--db CHEMIN` | Base explicite (absolue de préférence) |
+| `--json` | Sortie machine, avec `_meta` (base, data dir, commande) |
+| `-v` | Logs `DEBUG` sur `stderr` |
+| `-q` | Logs `ERROR` seulement |
+
+### 9.2 Codes de sortie
+
+| Code | Signification |
+|---|---|
+| **0** | Succès complet |
+| **3** | Succès partiel : scan avec périmètres non parcourus, opération annulée, backend indisponible |
+| **2** | Échec, argument invalide, erreur d'exécution |
+
+### 9.3 Commandes
+
+| Commande | Rôle | Exemple |
+|---|---|---|
+| `status` | Santé agrégée, couverture, politique | `pis status --json` |
+| `doctor` | Diagnostic détaillé | `pis doctor --deep` |
+| `scan` | Scanner une racine | `pis scan ~/Documents` |
+| `extract` | Extraire le contenu | `pis extract --limit 500` |
+| `retry` | Rejouer les échecs éligibles | `pis retry --limit 100` |
+| `ingest-issues` | Lister les problèmes d'extraction | `pis ingest-issues` |
+| `search` | Rechercher | `pis search "contrat" --mode rerank` |
+| `semantic-refresh` | Rafraîchissement borné au premier plan | `pis semantic-refresh --limit 256` |
+| `embed` | Job d'embedding reprenable | `pis embed --background` |
+| `hashes` | Hachage exact + doublons | `pis hashes --near` |
+| `derived` | Couches dérivées en une passe | `pis derived --only hashes,intel` |
+| `duplicates` | Statistiques doublons/versions | `pis duplicates` |
+| `intel` | Langue, entités, catégories, PII | `pis intel --limit 500` |
+| `graph` | Voisinage ou graphe d'entités | `pis graph --file-id 12 --depth 2` |
+| `galaxy` | Projection sémantique 2D | `pis galaxy --limit 1000 --persist` |
+| `clusters` | Construire/lister clusters et topics | `pis clusters --build --k 12` |
+| `topics` | Lister les topics | `pis topics` |
+| `context` | Contexte d'un document | `pis context 12` |
+| `dossier` | Gérer les dossiers | `pis dossier create --name "Client X"` |
+| `report` | Construire/lister les rapports | `pis report build --kind SEARCH ...` |
+| `maintenance` | Opérations bornées | `pis maintenance semantic-consistency` |
+| `backup` | Sauvegarde cohérente | `pis backup` |
+| `restore` | Restauration vérifiée | `pis restore <archive> --confirm` |
+| `api` | API loopback | `pis api --port 8600` |
+| `migrate-data` | Migrer `./data` vers XDG | `pis migrate-data` |
+| `ui` | Lancer l'application | `pis ui full` |
+
+Chaque commande accepte `-h` pour le détail de ses options.
+
+---
+
+## 10. Le scan : politique et sécurité
+
+### 10.1 Mode sûr par défaut (recommandé)
+
+Un dossier illisible **n'annule plus** le scan. L'application :
+
+1. enregistre chaque erreur par chemin (`scan_errors`) ;
+2. termine en **`COMPLETED_WITH_WARNINGS`** (code 3) ;
+3. réconcilie uniquement les sous-arbres **intégralement parcourus** ;
+4. laisse les fichiers situés sous un dossier illisible ou exclu **inchangés**.
+
+```bash
+pis scan ~/Documents
+# scan COMPLETED_WITH_WARNINGS: seen=... errors=3 unscanned_scopes=3
+```
+
+### 10.2 Mode strict (fail-closed)
+
+```bash
+pis scan ~/Documents --strict
+```
+
+Au premier accès refusé : statut `FAILED` (code 2), **aucune réconciliation**.
+Adapté aux scripts qui exigent une exhaustivité prouvée.
+
+### 10.3 Exclusions
+
+```bash
+pis scan /media/disque \
+  --exclude node_modules \
+  --exclude '*.tmp' \
+  --exclude-path /media/disque/sauvegardes
+
+# ou via l'environnement
+export PIS_SCAN_EXCLUDE_DIRS="node_modules,*.tmp,/mnt/backup"
+pis scan /media/disque
+```
+
+Les sous-arbres exclus sont enregistrés et **protégés de la réconciliation**.
+
+### 10.4 Scan borné (diagnostic)
+
+```bash
+pis scan ~/Documents --limit 1000 --dry-run   # plan seulement
+pis scan ~/Documents --limit 1000             # indexe 1000 fichiers, sans réconciliation
+```
+
+Un scan borné est toujours `CANCELLED` (code 3) : l'absence des autres fichiers
+n'est pas interprétée comme une suppression.
+
+### 10.5 Bonnes pratiques
+
+- Commencez par un dossier, puis élargissez.
+- Gardez le mode sûr ; utilisez `--strict` pour des contrôles d'intégrité.
+- Sur un disque externe, vérifiez que le point de montage est stable avant un
+  scan complet : la réconciliation dépend de l'identité du volume.
+- Un scan sans changement est bon marché (incrémental).
+
+---
+
+## 11. L'extraction de contenu
+
+```bash
+pis extract --limit 500        # lot borné (max 500 par appel)
+pis extract --dry-run          # combien de documents éligibles
+pis extract --scope /home/...  # restreindre à un préfixe
+pis extract --ocr              # activer l'OCR pour ce lot
+pis retry --limit 100          # rejouer les échecs temporaires
+pis ingest-issues              # voir la file et les résultats
+```
+
+- **Formats** : PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, ODT/ODS, RTF, TXT/MD/CSV,
+  HTML/XML/JSON/YAML, emails (`.eml`, `.msg`), EPUB, CHM, archives (ZIP, TAR,
+  7z, RAR selon outils).
+- **Limites** : extraction et hachage plafonnés à 50 Mio par fichier ; les
+  fichiers plus gros restent indexés en métadonnées.
+- **OCR** : désactivé par défaut (`PIS_OCR_ENABLED=1` pour l'activer ; langues
+  via `PIS_OCR_LANGS`, défaut `fra+deu+eng`). Nécessite `tesseract`.
+- **File d'échecs** : chaque résultat est classé (`EXTRACTED`, `NO_TEXT`,
+  `UNSUPPORTED_FORMAT`, `ENCRYPTED`, `PERMANENT_ERROR`, `TIMEOUT`, …). Les
+  échecs temporaires sont rejouables ; rien n'est supprimé.
+- **PST/OST** : nécessite `readpst`/`pypff` ; sinon `NOT_CONFIGURED`, sans échec
+  du pipeline.
+
+---
+
+## 12. La recherche
+
+```bash
+pis search "facture"                          # lexicale (FTS5)
+pis search "facture impayée client" --mode semantic
+pis search "contrat" --mode rerank            # hybride + fusion
+pis search facture --extension .pdf --limit 20
+pis search "" --category finance --language fr
+```
+
+| Mode | Ce qu'il fait | Prérequis |
+|---|---|---|
+| `lexical` | Nom, chemin, contenu indexé FTS5 ; rapide et exact | aucun |
+| `semantic` | Similarité de sens via embeddings locaux | couverture > 0 |
+| `rerank` | Fusion lexicale + sémantique + signaux doublons/versions | couverture > 0 |
+
+Filtres disponibles : `--extension`, `--document-kind`, `--language`,
+`--category`, `--limit`.
+
+Dans l'interface, la page **Search** ouvre le fichier ou son dossier, et la page
+**Advanced Search** ajoute tri, suggestions et filtres.
+
+---
+
+## 13. Couverture sémantique et embeddings de fond
+
+La **couverture sémantique** est le ratio :
+
+```
+documents embarqués / documents éligibles
+(= ACTIVE, contenu extrait > 50 caractères)
+```
+
+### 13.1 Vérifier
+
+```bash
+pis status                 # semantic=100.0% (614/614)
+pis embed --status         # état du job + couverture
+```
+
+### 13.2 Embarquer
+
+```bash
+# Au premier plan (bloquant, affiche le résultat)
+pis embed
+
+# En tâche de fond (reprend après un arrêt ou un redémarrage)
+pis embed --background
+pis embed --status
+pis embed --stop
+
+# Réparer un store perdu/incohérent ou une base migrée
+pis embed --rebuild
+```
+
+Le job :
+
+- traite uniquement les documents « dirty » (nouveaux ou modifiés) ;
+- est **idempotent et reprenable** : un arrêt laisse les lignes à refaire ;
+- écrit son état dans `~/.local/state/pis/embedding_job.json` et son journal
+  dans `~/.local/share/pis/logs/embedding_job.log` ;
+- n'embarque que les documents dont le contenu est suffisant.
+
+> **Sans l'extra `ai`**, `pis embed` s'arrête proprement en `NOT_CONFIGURED` et
+> indique `pip install -e ".[ai]"`. La recherche lexicale reste disponible.
+
+### 13.3 Seuils et bon sens
+
+- 614 documents → ~8 s ; 8 384 documents → ~37 s (GPU RTX 3090, all-MiniLM-L6-v2).
+- Sur de très gros corpus, lancez `--background` et priorisez par périmètre
+  (`pis scan` / `pis embed --limit`).
+- `pis maintenance semantic-consistency` doit afficher
+  `store_vectors == embedded_rows`.
+
+---
+
+## 14. Doublons, versions et documents liés
+
+```bash
+pis hashes                       # doublons exacts (taille d'abord, SHA-256)
+pis hashes --near                # quasi-doublons (vecteurs si disponibles)
+pis duplicates                   # statistiques
+```
+
+- **Exacts** : même contenu binaire, quel que soit le nom. Aucun fichier n'est
+  déplacé ou supprimé.
+- **Quasi-doublons** : LSH + confirmation sémantique, borné (pas de O(N²)).
+- **Versions** : familles déduites de marqueurs explicites uniquement ; aucune
+  chronologie inventée.
+- **Liés** : suggestions pour la recherche et les rapports.
+
+Dans l'UI : page **Duplicates & Versions** (onglets Exact, Near, Versions,
+Related, Reranked search). Le bouton de hachage y est disponible ; en CLI,
+utilisez `pis hashes`.
+
+---
+
+## 15. Intelligence, timeline, graphe et galaxie
+
+```bash
+pis intel --limit 500            # langue, entités, catégories, PII
+pis graph --file-id 12 --depth 2 # voisinage documentaire
+pis graph --min-docs 3           # graphe d'entités
+pis galaxy --limit 1000 --persist
+pis clusters --build --k 12
+pis topics
+pis context 12
+```
+
+- **Langues** : FR/DE/EN prioritaire, détection locale sans dépendance
+  externe ; les fichiers de code sont classés `code`, les cas incertains `und`.
+- **Entités** : dates, URL, téléphones, organisations, montants, lieux, emails,
+  personnes (heuristiques explicitement marquées).
+- **Catégories** : taxonomie configurable, multi-label, override manuel.
+- **PII** : détection validée (email, téléphone, adresse, IBAN, carte, etc.),
+  **stockée masquée + empreinte** uniquement. Aucune valeur brute n'est
+  exportée.
+- **Timeline** : sources de dates explicites (`KNOWN`/`DERIVED`), jamais
+  inventées.
+- **Galaxie** : projection PCA/SVD bornée ; agrégation pour les gros volumes.
+  C'est une carte exploratoire, pas une distance littérale.
+- **Clusters/topics** : MiniBatchKMeans/KMeans + c-TF-IDF déterministe ; libellés
+  appuyés sur des termes du corpus.
+
+---
+
+## 16. Rapports et dossiers
+
+### 16.1 Dossiers
+
+```bash
+pis dossier create --name "Client X" --mode STATIC --doc-ids 12 18 44
+pis dossier create --name "Veille" --mode DYNAMIC \
+  --query '{"kind":"search","query":"réglementation"}'
+pis dossier list
+pis dossier add --dossier-id dos_... --doc-ids 51
+pis dossier freeze --dossier-id dos_...
+pis dossier compare --dossier-id dos_...
+```
+
+- `STATIC` : liste figée de documents.
+- `DYNAMIC` : requête rejouée à chaque construction.
+- `freeze` : snapshot comparable dans le temps.
+
+### 16.2 Rapports
+
+```bash
+pis report build --kind SEARCH \
+  --title "Factures 2026" \
+  --query '{"query":"facture"}' \
+  --formats html,json,pdf \
+  --privacy MASK_PII
+
+pis report list
+```
+
+| Paramètre | Valeurs |
+|---|---|
+| `--kind` | `SEARCH`, `DOSSIER`, `TIMELINE`, `DUPLICATES`, `ENTITY_CATEGORY`, `PII_SUMMARY`, `INGESTION`, `PROJECT` |
+| `--formats` | `HTML`, `JSON`, `PDF` (insensible à la casse) |
+| `--privacy` | `FULL_LOCAL`, `MASK_PII`, `OMIT_HIGH_SENSITIVITY`, `PATH_REDACTED`, `METADATA_ONLY` |
+| `--doc-ids` | Identifiants explicites |
+| `--query` | JSON de recherche |
+| `--dry-run` | Construit l'IR sans écrire d'artefact |
+
+Chaque rapport produit :
+
+- un **HTML autonome** (CSS inline, aucune ressource distante) ;
+- un **JSON** structuré ;
+- un **PDF** si un fournisseur local est disponible (LibreOffice/Chrome) ;
+- un **manifeste** (empreinte logique, sources, mode de confidentialité,
+  avertissements).
+
+Les citations utilisent `[D12]` / `[D12:p3]` avec provenance
+`KNOWN`/`DERIVED`/`INFERRED`/`UNAVAILABLE`. Aucune page n'est inventée.
+
+> Les artefacts sont écrits dans `~/.pis-exports` (ou `PIS_EXPORT_DIR`), jamais
+> dans le corpus scanné.
+
+---
+
+## 17. Sauvegarde et restauration
+
+```bash
+# Sauvegarde applicative cohérente (SQLite + store vectoriel + config)
+pis backup
+pis backup --out /media/backup --no-semantic
+
+# Vérifier sans restaurer
+pis restore /media/backup/pis-backup-....tar.gz --verify-only
+
+# Restaurer (staging + intégrité + copie de rollback)
+pis restore /media/backup/pis-backup-....tar.gz --confirm
+
+# Cibler une autre base
+pis restore <archive> --target-db /tmp/restore.db --confirm
+```
+
+La sauvegarde utilise l'API de backup SQLite (cohérente même en WAL), vérifie
+les empreintes, et ne copie **aucun secret**. La restauration refuse d'écraser
+silencieusement et conserve une copie `.pre-restore`.
+
+---
+
+## 18. API locale et MCP
+
+### 18.1 API REST (loopback uniquement)
+
+```bash
+pis api                      # http://127.0.0.1:8600/api/v1
+pis api --port 8610
+```
+
+Principaux points d'entrée (lecture, PII masquée, chemins expurgeables) :
+
+```
+GET  /api/v1/health
+GET  /api/v1/doctor
+GET  /api/v1/files?limit=25
+GET  /api/v1/files/{id}
+GET  /api/v1/search?q=facture&mode=lexical
+GET  /api/v1/duplicates
+GET  /api/v1/entities
+GET  /api/v1/categories
+GET  /api/v1/timeline
+GET  /api/v1/graph/neighborhood/{id}
+GET  /api/v1/ingestion/issues
+GET  /api/v1/dossiers
+GET  /api/v1/reports
+GET  /api/v1/galaxy
+GET  /api/v1/clusters
+GET  /api/v1/topics
+GET  /api/v1/context/{id}
+```
+
+L'API est **mono-utilisateur, sans authentification ni TLS**, et refuse par
+défaut une écoute non-loopback (`--allow-remote` explicite, déconseillé).
+
+### 18.2 MCP (lecture seule, stdio)
+
+```bash
+python -m src.mcp_server
+```
+
+Trois outils : `search_files`, `get_document`, `semantic_search` (repli lexical
+si les embeddings sont absents). Aucune écriture, aucun scan.
+
+---
+
+## 19. Confidentialité et sécurité
+
+- **Aucune télémétrie**.
+- **Politique de contenu distant** : `PIS_REMOTE_CONTENT_POLICY=never` par
+  défaut dans tous les profils. Un appel distant exige une configuration
+  explicite (mode `hybrid`/`api`, politique `extracted_text`, clé API).
+- **PII** : détection locale, stockage masqué + empreinte salée ; les API et
+  exports masquent par défaut (`MASK_PII` recommandé).
+- **Aucune modification des source** : le scan est en lecture seule ;
+  l'extraction n'écrit que dans la base.
+- **Sorties hors corpus** : exports et sauvegardes vont dans des répertoires
+  dédiés.
+- **API** : loopback uniquement, pas d'auth/TLS (mono-utilisateur).
+- **Chiffrement au repos** : non fourni au niveau applicatif ; utilisez le
+  chiffrement disque de l'OS.
+
+---
+
+## 20. Dépannage
+
+| Symptôme | Cause probable | Solution |
+|---|---|---|
+| `Permission denied` pendant le scan | Sous-arbre illisible | Mode sûr par défaut ; sinon `--ignore-errors`, `--exclude`, ou lancer avec des droits adaptés |
+| `scan FAILED` (code 2) | `--strict` + accès refusé | Relancer sans `--strict` ou exclure le sous-arbre |
+| `scan COMPLETED_WITH_WARNINGS` (code 3) | Périmètres non parcourus | Normal en mode sûr ; vérifier `unscanned_scopes` |
+| `semantic=0.0%` | Aucun document extrait ou extrait trop court | `pis extract`, puis `pis embed` |
+| `NOT_CONFIGURED` pour l'embedding | Extra `ai` absent | `pip install -c constraints.txt -e ".[ai]"` |
+| Recherche sémantique sans résultat | Couverture insuffisante | `pis embed`, vérifier `pis embed --status` |
+| `store_vectors != embedded_rows` | Store incohérent / base migrée | `pis embed --rebuild` puis `pis maintenance semantic-consistency` |
+| PDF non généré | Aucun fournisseur local | Installer LibreOffice ou Chrome, ou exporter en HTML/JSON |
+| `pis report` → 0 artefact | Format invalide | Utiliser `HTML`, `JSON`, `PDF` (la casse est tolérée) |
+| `port déjà utilisé` | Autre instance | `--port` libre ou fermer l'instance |
+| `base introuvable` / résultats vides | Base différente | `pis status` affiche la base ; utiliser `--db` ou `PIS_DATA_DIR` |
+| Anciennes données absentes | Non migrées | `pis migrate-data` (ou `PIS_DATA_DIR=./data` temporairement) |
+| Ollama indisponible | Daemon arrêté / modèle absent | `ollama serve`, `ollama pull <modèle>` ; sinon mode local lexical |
+| OCR sans effet | OCR désactivé | `PIS_OCR_ENABLED=1` + `tesseract` installé, puis `pis extract --ocr` |
+| Fichier ignoré | Extension/exclusion | Vérifier la politique du scanner et `--exclude` |
+| Embedding très long | Gros corpus / modèle lourd | `pis embed --background`, `--limit`, ou périmètre réduit |
+
+Logs utiles :
+
+```bash
+pis -v status                 # DEBUG sur stderr
+pis -q scan ~/Documents       # erreurs seulement
+tail -f ~/.local/share/pis/logs/embedding_job.log
+```
+
+---
+
+## 21. Limites connues
+
+- **Échelle 36 To** : conçue, pas encore mesurée de bout en bout. Validé sur
+  15 192 fichiers / 614 documents embarqués, et 8 384 documents sur une base
+  réelle de 1,76 M fichiers (voir [`REAL_CORPUS.md`](REAL_CORPUS.md)).
+- **OS** : Linux validé ; macOS/Windows non validés pour ce MVP.
+- **Dette statique** : ruff/mypy sont sous budget décroissant, pas à zéro.
+- **PostgreSQL/pgvector** : optionnel, non exercé ; le backend canonique est le
+  store NumPy local.
+- **PST/OST** : outils externes requis.
+- **API** : pas d'authentification/TLS (mono-utilisateur, loopback).
+- **Versions** : familles déduites uniquement de marqueurs explicites.
+
+---
+
+## 22. Mise à jour, migration, désinstallation
+
+### Mise à jour
+
+```bash
+source .venv/bin/activate
+pip install -c constraints.txt -e . --upgrade
+pis doctor
+```
+
+La base est migrée automatiquement (colonnes additives). Faites une sauvegarde
+avant une mise à jour majeure :
+
+```bash
+pis backup
+```
+
+### Réinitialiser l'index (sans toucher aux sources)
+
+```bash
+pis --db ~/.local/share/pis/indexes/files.db maintenance integrity
+# ou repartir d'une base neuve :
+pis --db /tmp/nouvelle.db scan ~/Documents
+```
+
+Ne supprimez jamais `~/.local/share/pis` sans sauvegarde : la base contient
+l'index, les rapports et l'historique.
+
+### Désinstallation
+
+```bash
+pip uninstall 36tb-intelligence
+# optionnel : supprimer les données (IRRÉVERSIBLE)
+rm -rf ~/.local/share/pis ~/.pis-exports ~/.pis-backups ~/.local/state/pis
+```
+
+---
+
+## 23. Annexes
+
+### 23.1 Variables d'environnement
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `PIS_DATA_DIR` | `~/.local/share/pis` | Racine des données |
+| `PIS_DB_PATH` | `<data>/indexes/files.db` | Base SQLite |
+| `PIS_EMBEDDING_STORE_DIR` | `<data>/cache/embeddings` | Store vectoriel |
+| `PIS_EXPORT_DIR` | `~/.pis-exports` | Rapports |
+| `PIS_BACKUP_DIR` | `~/.pis-backups` | Sauvegardes |
+| `PIS_STATE_DIR` | `~/.local/state/pis` | État des jobs |
+| `PIS_CACHE_DIR` | `~/.cache/pis` | Cache général |
+| `PIS_NO_AUTO_MIGRATE` | non | Désactive la migration automatique |
+| `PIS_SCAN_IGNORE_ERRORS` | `1` | Scan partiel sûr |
+| `PIS_SCAN_EXCLUDE_DIRS` | — | Exclusions (noms, globs, chemins) |
+| `PIS_REMOTE_CONTENT_POLICY` | `never` | Contenu distant |
+| `PIS_AI_MODE` | `auto` | `local`, `hybrid`, `api`, `auto` |
+| `PIS_OCR_ENABLED` | `0` | Active l'OCR |
+| `PIS_OCR_LANGS` | `fra+deu+eng` | Langues OCR |
+| `PIS_LAUNCH_PROFILE` | `smart` | Profil par défaut |
+| `PIS_API_HOST` / `PIS_API_PORT` | `127.0.0.1` / `8600` | API |
+| `PIS_LOG_LEVEL` | `WARNING` | Niveau de log |
+| `PIS_MCP_TRANSPORT` | `stdio` | Transport MCP |
+
+### 23.2 Codes de sortie
+
+`0` succès · `3` partiel/annulé · `2` échec.
+
+### 23.3 Extensions traitées (extraction)
+
+`.pdf .doc .docx .xls .xlsx .ppt .pptx .odt .ods .rtf .txt .md .csv .html .htm
+.xml .json .yaml .yml .py .js .css .sql .sh .ps1 .bat .cfg .ini .log .eml .msg
+.epub .chm .wpd .wps` — plus les archives (ZIP/TAR/7z/RAR) et les images/PDF via
+OCR lorsqu'il est activé.
+
+### 23.4 Glossaire
+
+- **ACTIVE / MISSING** : état de cycle de vie d'un fichier indexé.
+- **Réconciliation** : passage d'un scan complet qui associe les renommages et
+  marque les disparitions ; jamais exécutée sur un scan partiel/échoué.
+- **Scope non parcouru** : sous-arbre illisible ou exclu, protégé de la
+  réconciliation.
+- **Couverture sémantique** : `documents embarqués / documents éligibles`.
+- **Embedding** : vecteur numérique représentant le sens d'un document.
+- **Rerank** : fusion lexicale + sémantique + signaux de doublons/versions.
+- **Dossier** : sélection statique ou dynamique de documents.
+- **IR** : représentation intermédiaire d'un rapport (sections, sources,
+  provenance) avant export.
+
+### 23.5 Où aller plus loin
+
+- Preuves réelles : [`REAL_CORPUS.md`](REAL_CORPUS.md)
+- Test d'installation neuve : [`ACCEPTANCE_NEW_USER.md`](ACCEPTANCE_NEW_USER.md)
+- Capacités et limites : [`RELEASE_NOTES.md`](RELEASE_NOTES.md)
+- Installer/exploiter : [`RELEASE_CANDIDATE.md`](RELEASE_CANDIDATE.md)
+- Protocole qualité : [`VALIDATION_PROTOCOL.md`](VALIDATION_PROTOCOL.md)
+
+---
+
+*Guide généré pour 36TB Intelligence v1.0.0-rc2. Les commandes et chemins
+correspondent à l'implémentation validée du dépôt.*

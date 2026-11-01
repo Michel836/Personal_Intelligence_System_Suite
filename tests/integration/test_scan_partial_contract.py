@@ -186,3 +186,15 @@ def test_cli_scan_exit_codes(tmp_path: Path, capsys, monkeypatch) -> None:
         _unlock(locked)
 
     assert '"status": "FAILED"' in captured.out
+
+
+def test_env_exclusions_are_honoured(tmp_path: Path, monkeypatch) -> None:
+    from src.cli import main as cli_main
+
+    monkeypatch.setenv("PIS_DB_PATH", str(tmp_path / "env.db"))
+    monkeypatch.setenv("PIS_SCAN_EXCLUDE_DIRS", "locked2")
+    corpus = _make_corpus(tmp_path)
+    assert cli_main(["--json", "scan", str(corpus)]) == 3  # excluded scope warning
+    states = _states(DatabaseManager(tmp_path / "env.db"))
+    assert str(corpus / "locked2" / "locked2.txt") not in states
+    assert str(corpus / "locked1" / "locked1.txt") in states

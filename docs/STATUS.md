@@ -1,6 +1,6 @@
 # 36TB Intelligence — System Status
 
-**Version:** `1.0.0rc1` · **Status:** functional MVP (Linux, mono-user, local-first)
+**Version:** `1.0.0rc2` · **Status:** functional MVP (Linux, mono-user, local-first)
 **Last validated:** 2026-11-01
 
 ## Where the project stands

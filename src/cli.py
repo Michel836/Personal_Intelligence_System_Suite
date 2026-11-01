@@ -124,12 +124,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if args.dry_run:
         return _emit(args, {"dry_run": True, "root": str(root), "db": _db_label(db)},
                      f"dry-run scan root={root} db={_db_label(db)}")
+    env_excludes = [
+        item.strip()
+        for item in os.environ.get("PIS_SCAN_EXCLUDE_DIRS", "").split(",")
+        if item.strip()
+    ]
     result = ScanService(db).run(ScanRequest(
         root=root,
         limit=args.limit,
         batch_size=1000,
         ignore_errors=bool(args.ignore_errors),
-        exclude_dirs=tuple(args.exclude_dirs or ()),
+        exclude_dirs=tuple(args.exclude_dirs or ()) + tuple(env_excludes),
         exclude_paths=tuple(args.exclude_paths or ()),
     ))
     data = {"status": result.status, "files_seen": result.files_seen,

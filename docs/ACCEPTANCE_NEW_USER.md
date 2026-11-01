@@ -27,7 +27,7 @@ The script:
 ## Last recorded result
 
 **Date:** 2026-11-01 · **Host:** Linux, Python 3.11.15, RTX 3090
-**Wheel:** `36tb_intelligence-1.0.0rc1-py3-none-any.whl`
+**Wheel:** `36tb_intelligence-1.0.0rc2-py3-none-any.whl`
 
 ```
 == Result ==
