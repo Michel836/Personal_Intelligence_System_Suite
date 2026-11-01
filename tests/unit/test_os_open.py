@@ -75,5 +75,7 @@ def test_interactive_table_uses_canonical_helper() -> None:
     source = (Path(__file__).resolve().parents[2] / "src" / "ui" / "interactive_table.py").read_text(
         encoding="utf-8"
     )
-    assert "from ..utils.os_open import reveal_path" in source
+    assert "from ..utils.os_open import" in source
+    assert "reveal_path" in source
+    assert "open_path" in source
     assert "reveal_path(path)" in source

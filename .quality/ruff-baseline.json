@@ -98,7 +98,7 @@
     "src/ui/disk_selector.py": 22,
     "src/ui/enhanced_components.py": 20,
     "src/ui/intelligence.py": 54,
-    "src/ui/interactive_table.py": 12,
+    "src/ui/interactive_table.py": 3,
     "src/ui/onboarding.py": 11,
     "src/ui/real_time_monitor.py": 36,
     "src/ui/scan_controls.py": 12,
@@ -147,7 +147,7 @@
     "tests/unit/test_scan_runtime_hardening.py": 4,
     "tests/unit/test_usage_accounting.py": 2
   },
-  "generated_at": "2026-11-01T21:10:37+00:00",
+  "generated_at": "2026-11-01T21:30:19+00:00",
   "python": "3.11.15",
-  "total": 2327
+  "total": 2318
 }

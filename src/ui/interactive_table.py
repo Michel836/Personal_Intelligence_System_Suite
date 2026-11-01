@@ -3,12 +3,12 @@
 import math
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
-from ..utils.os_open import reveal_path
+from ..utils.os_open import open_path, reveal_path
 
 
 class InteractiveTable:
@@ -19,7 +19,7 @@ class InteractiveTable:
 
     def render(
         self,
-        data: List[Dict[str, Any]],
+        data: list[dict[str, Any]],
         title: str = "Search Results",
         page_size: int = 20,
         show_actions: bool = True,
@@ -212,7 +212,7 @@ class InteractiveTable:
         # Return selected items if any
         return st.session_state.get(f"{self.key_prefix}_selected", [])
 
-    def _get_default_columns(self, available: List[str]) -> List[str]:
+    def _get_default_columns(self, available: list[str]) -> list[str]:
         """Get default columns to display."""
         priority_columns = [
             'filename', 'path', 'size_bytes', 'extension',
@@ -224,10 +224,10 @@ class InteractiveTable:
         self,
         df: pd.DataFrame,
         text_filter: str,
-        extensions: List[str],
+        extensions: list[str],
         min_size_mb: float,
         max_size_mb: float,
-        date_range: List
+        date_range: list
     ) -> pd.DataFrame:
         """Apply all filters to the dataframe."""
         filtered = df.copy()
@@ -316,7 +316,7 @@ class InteractiveTable:
         # Keep drive and filename, truncate middle
         return f"{parts[0]}\\...\\{parts[-2]}\\{parts[-1]}"
 
-    def _get_column_config(self) -> Dict:
+    def _get_column_config(self) -> dict:
         """Get column configuration for st.dataframe."""
         return {
             "size": st.column_config.TextColumn("Size", width="small"),
@@ -325,6 +325,61 @@ class InteractiveTable:
             "filename": st.column_config.TextColumn("Filename", width="large"),
             "path": st.column_config.TextColumn("Path", width="large"),
         }
+
+    def _render_details(self, row: dict[str, Any]) -> None:
+        """Show the full metadata (and extracted text preview) of one row."""
+        path = str(row.get("path") or "")
+        filename = str(row.get("filename") or (Path(path).name if path else "Fichier"))
+        file_id = row.get("id", "")
+
+        with st.expander(f"📄 Détails — {filename}", expanded=True):
+            left, right = st.columns(2)
+            with left:
+                st.markdown(f"**Nom :** {filename}")
+                st.markdown(f"**Dossier :** `{Path(path).parent if path else '—'}`")
+                st.markdown(f"**Taille :** {self._format_size(row.get('size_bytes', 0))}")
+                st.markdown(
+                    f"**Type :** {row.get('extension') or row.get('file_type') or '—'}"
+                )
+            with right:
+                st.markdown(f"**Modifié :** {row.get('modified_at') or '—'}")
+                st.markdown(f"**Priorité :** {row.get('priority') or '—'}")
+                st.markdown(f"**État :** {row.get('state') or 'ACTIVE'}")
+                extracted = "oui" if row.get("content_extracted") else "non"
+                st.markdown(f"**Contenu extrait :** {extracted}")
+
+            st.markdown("**Chemin complet :**")
+            st.code(path or "—", language=None)
+
+            content = (row.get("content_text") or "").strip()
+            if content:
+                st.text_area(
+                    "Aperçu du contenu (2 000 premiers caractères)",
+                    content[:2000],
+                    height=220,
+                    disabled=True,
+                    key=f"{self.key_prefix}_view_content_{file_id}",
+                )
+            else:
+                st.caption(
+                    "Aucun contenu extrait pour ce fichier : métadonnées seulement. "
+                    "Lancez « pis extract » pour l'analyser."
+                )
+
+            actions = st.columns(3)
+            with actions[0]:
+                if st.button("📂 Ouvrir le dossier", key=f"{self.key_prefix}_view_folder_{file_id}",
+                             use_container_width=True) and not reveal_path(path):
+                    st.warning(f"Impossible d'ouvrir le dossier : {path}")
+            with actions[1]:
+                if st.button("🔗 Ouvrir le fichier", key=f"{self.key_prefix}_view_open_{file_id}",
+                             use_container_width=True) and not open_path(path):
+                    st.warning(f"Impossible d'ouvrir le fichier : {path}")
+            with actions[2]:
+                if st.button("❌ Fermer", key=f"{self.key_prefix}_view_close_{file_id}",
+                             use_container_width=True):
+                    st.session_state.pop(f"{self.key_prefix}_view", None)
+                    st.rerun()
 
     def _render_with_actions(self, display_df: pd.DataFrame, full_df: pd.DataFrame):
         """Render table with action buttons."""
@@ -396,7 +451,10 @@ class InteractiveTable:
                 action_cols = st.columns(2)
                 with action_cols[0]:
                     if st.button("👁️", key=f"{self.key_prefix}_view_{idx}", help="View details"):
+                        # The details panel is rendered above the table; rerun so
+                        # it sees the selection in the same interaction.
                         st.session_state[f"{self.key_prefix}_view"] = full_df.iloc[idx].to_dict()
+                        st.rerun()
                 with action_cols[1]:
                     if st.button("📂", key=f"{self.key_prefix}_open_{idx}", help="Open location"):
                         path = getattr(full_row, 'path', '')
@@ -404,6 +462,15 @@ class InteractiveTable:
                             st.warning(f"Impossible d'ouvrir le dossier : {path}")
 
             st.divider()
+
+            view_row = st.session_state.get(f"{self.key_prefix}_view")
+            row_id = getattr(full_row, "id", None)
+            row_path = getattr(full_row, "path", None)
+            if view_row and (
+                (row_id is not None and view_row.get("id") == row_id)
+                or (row_id is None and view_row.get("path") == row_path)
+            ):
+                self._render_details(view_row)
 
     def _get_file_icon(self, extension: str) -> str:
         """Get emoji icon for file type."""

@@ -2880,8 +2880,8 @@ def file_viewer_page():
         # Path input
         browse_path = st.text_input(
             "📂 Browse Path",
-            value="C:\\",
-            help="Enter a path to browse files directly"
+            value=st.session_state.get("browse_path", str(Path.home())),
+            help="Saisissez un dossier à parcourir directement"
         )
 
     with col2:
@@ -2893,10 +2893,10 @@ def file_viewer_page():
                 st.error("Path not found")
 
     # Show browse results
-    if hasattr(st.session_state, 'browse_results'):
+    if 'browse_results' in st.session_state:
         st.write(f"📁 **Contents of:** {st.session_state.get('browse_path', '')}")
 
-        files = st.session_state.browse_results
+        files = st.session_state['browse_results']
 
         for i, file_path in enumerate(files):
             if file_path.is_file():
