@@ -195,6 +195,16 @@ def main():
 
     # Sidebar
     with st.sidebar:
+        # Navigation first: it is the primary control and must never be hidden
+        # below the activity/status panels on a small screen.
+        st.header("🧭 Navigation")
+        page = st.radio(
+            "Navigation",
+            _navigation_pages(),
+            label_visibility="collapsed",
+        )
+        st.markdown("---")
+
         # New Real-time Activity Monitor
         render_sidebar_activity_monitor()
 
@@ -221,13 +231,6 @@ def main():
             st.caption(f"AI status unavailable: {exc}")
 
         st.markdown("---")
-        st.header("⚙️ Options")
-        st.markdown("---")
-
-        page = st.radio(
-            "Navigation",
-            _navigation_pages(),
-        )
 
     # Check for redirect to statistics
     if st.session_state.get('redirect_to_stats', False):
