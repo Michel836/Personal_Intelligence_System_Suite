@@ -362,8 +362,9 @@ class InteractiveTable:
                 )
             else:
                 st.caption(
-                    "Aucun contenu extrait pour ce fichier : métadonnées seulement. "
-                    "Lancez « pis extract » pour l'analyser."
+                    "Aucun contenu extrait (fichier non analysé ou dépassant la "
+                    "limite de 50 Mio) : métadonnées seulement. Utilisez "
+                    "« 🔗 Ouvrir le fichier » pour le consulter."
                 )
 
             actions = st.columns(3)
